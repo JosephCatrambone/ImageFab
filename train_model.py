@@ -4,6 +4,9 @@ import sys, os
 import numpy as np
 import tensorflow as tf
 
+TRAINING_ITERATIONS = 10000
+TRAINING_DROPOUT_RATE = 0.8
+TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 64
 BATCH_SIZE = 5
 IMAGE_WIDTH = 256
@@ -65,6 +68,25 @@ def build_decoder(representation_batch, keep_prob, output_shape)
 
 	return 
 
+# Define objects
 input_batch = tf.placeholder(tf.types.float32, [None, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
 keep_prob = tf.placeholder(tf.types.float32)
-encoder = build_encoder(input_batch, keep_prob)
+encoder, encoder_weights, encoder_biases = build_encoder(input_batch, keep_prob)
+decoder = build_decoder(encoder, keep_prob, input_batch.get_shape())
+
+# Define goals
+l1_cost = tf.reduce_mean(tf.abs(input_batch - decoder))
+l2_cost = tf.reduce_sum((input_batch - decoder)**2)
+cost = l2_cost
+optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
+
+with tf.Session() as sess:
+	saver = tf.train.Saver()
+	sess.run(tf.initialize_all_variables())
+	for iteration in range(TRAINING_ITERATIONS):
+		sess.run(optimizer, feed_dict={input_batch:x, keep_prob:TRAINING_DROPOUT_RATE})
+		if iteration % TRAINING_REPORT_INTERVAL == 0:
+			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x, keep_prob:1.0})
+			print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
+			saver.save(sess, "checkpoint.model", global_step=iteration)
+
