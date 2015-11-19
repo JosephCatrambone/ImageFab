@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 import sys, os
+from glob import iglob
 
+from PIL import Image
 import numpy as np
 import tensorflow as tf
 
@@ -46,7 +48,7 @@ def build_encoder(image_batch, keep_prob, representation_size=REPRESENTATION_SIZ
 	# FC 1
 	wf1 = tf.Variable(tf.random_normal([drop_length, representation_size]))
 	fb1 = tf.Variable(tf.random_normal([representation_size,])
-	full1 = tf.matmul(drop1, wf1) + fb1
+	full1 = tf.matmul(resh1, wf1) + fb1
 	act3 = tf.nn.relu(full1)
 
 	return act3, [cw1, cw2, wf1], [cb1, cb2, fb1]
@@ -61,24 +63,51 @@ def build_decoder(representation_batch, keep_prob, output_shape)
 	full2 = tf.matmul(representation_batch, wf2) + fb2
 	act4 = tf.nn.relu(full2)
 
+	# Reshape
+	resh2 = tf.reshape(act4, [-1, output_shape[1].value, output_shape[2].value, output_shape[3].value])
+
 	# Conv 3
-	
+	cw3 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 256]))
+	cb3 = tf.Variable(tf.random_normal([256,]))
+	conv3 = tf.nn.conv2d(resh2, filter=cw3, strides=[1, 1, 1, 1], padding='SAME')
+	biased3 = tf.nn.bias_add(conv3, cb3)
+	act5 = tf.nn.relu(biased3)
+	pool3 = tf.nn.max_pool(act5, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
+	norm3 = tf.nn.lrn(pool3, 5, bias=1.0, alpha=0.001, beta=0.75)
+	drop3 = tf.nn.dropout(norm3, keep_prob)
 
 	# Conv 4
+	cw4 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 256]))
+	cb4 = tf.Variable(tf.random_normal([256,])
+	conv4 = tf.nn.conv2d(drop3, filter=cw4, strides=[1, 1, 1, 1], padding='SAME')
+	biased4 = tf.nn.bias_add(conv4, cb4)
+	act5 = tf.nn.relu(biased4) # Don't drop last layer.
 
-	return 
+	return act5, [wf2, cw3, cw4], [fb2, cb3, cb4]
 
 # Define objects
 input_batch = tf.placeholder(tf.types.float32, [None, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
+encoded_batch = tf.placeholder(tf.types.float32, [None, REPRESENTATION_SIZE])
 keep_prob = tf.placeholder(tf.types.float32)
+
 encoder, encoder_weights, encoder_biases = build_encoder(input_batch, keep_prob)
-decoder = build_decoder(encoder, keep_prob, input_batch.get_shape())
+autoencoder, ae_weights, ae_biases = build_decoder(encoder, keep_prob, input_batch.get_shape())
+decoder, decoder_weights, decoder_biases = build_decoder(encoded_batch, tf.constant(1.0), input_batch.get_shape())
 
 # Define goals
-l1_cost = tf.reduce_mean(tf.abs(input_batch - decoder))
-l2_cost = tf.reduce_sum((input_batch - decoder)**2)
+l1_cost = tf.reduce_mean(tf.abs(input_batch - autoencoder))
+l2_cost = tf.reduce_sum((input_batch - autodencoder)**2)
 cost = l2_cost
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
+
+# Define data-source iterator
+def gather_batch(file_glob, batch_size):
+	while True:
+		batch = numpy.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH))
+		for index, filename in zip(range(batch_size), iglob(file_glob)):
+			image = Image.open(filename)
+			
+		
 
 with tf.Session() as sess:
 	saver = tf.train.Saver()
