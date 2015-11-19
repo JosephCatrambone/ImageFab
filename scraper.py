@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 
-def download_page(url, target_width, target_height, crop=False, embed=True):
+def download_page(url, target_width, target_height, crop=False, embed=True, file_prefix="", encoding="png"):
 	# If crop = True, we cut into a section of the image after rescaling.
 	# If embed = True, we pad the image on either side.
 	if not crop ^ embed:
@@ -15,6 +15,7 @@ def download_page(url, target_width, target_height, crop=False, embed=True):
 	result = requests.get(url)
 	soup = BeautifulSoup(result.content, 'html.parser')
 	# Get image URL
+	index = 0
 	for link in soup.find_all('a'):
 		# Pull URL from hyperlink
 		if link.get('href').endswith(".png"):
@@ -69,3 +70,9 @@ def download_page(url, target_width, target_height, crop=False, embed=True):
 			)
 		else: # Just write it.
 			newimg = img
+		# Find a name.
+		filename = file_prefix + index
+		while os.path.isfile(filename):
+			index += 1
+		newimg.save(filename, format=encoding)
+		print("Wrote file {}".format(filename))
