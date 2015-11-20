@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 
+LEARNING_RATE = 0.01
 TRAINING_ITERATIONS = 10000
 TRAINING_DROPOUT_RATE = 0.8
 TRAINING_REPORT_INTERVAL = 100
@@ -39,9 +40,8 @@ def build_encoder(image_batch, keep_prob, representation_size=REPRESENTATION_SIZ
 	norm2 = tf.nn.lrn(pool2, 5, bias=1.0, alpha=0.001, beta=0.75)
 	drop2 = tf.nn.dropout(norm2, keep_prob)
 
-	# Record old shape
-	drop_shape = drop2.get_shape()
-	drop_length = drop_shape[1].value*drop_shape[2].value*drop_shape[3].value
+	# Calculate flat size.
+	drop_length = IMAGE_DEPTH*(IMAGE_WIDTH/5/5)*(IMAGE_HEIGHT/5/5)
 
 	# Reshape
 	resh1 = tf.reshape(drop2, [-1, drop_length]) # Make flat
@@ -68,8 +68,8 @@ def build_decoder(representation_batch, keep_prob, output_shape):
 	resh2 = tf.reshape(act4, [-1, output_shape[1].value, output_shape[2].value, output_shape[3].value])
 
 	# Conv 3
-	cw3 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 256]))
-	cb3 = tf.Variable(tf.random_normal([256,]))
+	cw3 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 1]))
+	cb3 = tf.Variable(tf.random_normal([1,]))
 	conv3 = tf.nn.conv2d(resh2, filter=cw3, strides=[1, 1, 1, 1], padding='SAME')
 	biased3 = tf.nn.bias_add(conv3, cb3)
 	act5 = tf.nn.relu(biased3)
@@ -78,8 +78,8 @@ def build_decoder(representation_batch, keep_prob, output_shape):
 	drop3 = tf.nn.dropout(norm3, keep_prob)
 
 	# Conv 4
-	cw4 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 256]))
-	cb4 = tf.Variable(tf.random_normal([256,]))
+	cw4 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 1]))
+	cb4 = tf.Variable(tf.random_normal([1,]))
 	conv4 = tf.nn.conv2d(drop3, filter=cw4, strides=[1, 1, 1, 1], padding='SAME')
 	biased4 = tf.nn.bias_add(conv4, cb4)
 	act5 = tf.nn.relu(biased4) # Don't drop last layer.
@@ -97,28 +97,32 @@ decoder, decoder_weights, decoder_biases = build_decoder(encoded_batch, tf.const
 
 # Define goals
 l1_cost = tf.reduce_mean(tf.abs(input_batch - autoencoder))
-l2_cost = tf.reduce_sum((input_batch - autodencoder)**2)
+l2_cost = tf.reduce_sum(tf.pow(input_batch - autoencoder,2))
 cost = l2_cost
-optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
+optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost)
 
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
 	reader = tf.WholeFileReader()
+	import pdb; pdb.set_trace()
 	while True:
 		#batch = numpy.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH))
-		filenames = list()
+		image_batch = list()
 		for index, filename in zip(range(batch_size), iglob(file_glob)):
-			filenames.append(filename)
-		fname_queue = tf.train.string_input_producer(filenames)
-		k, v = reader.read(fname_queue)
-		yield tf.image.decode_jpeg(contents=v, channels=3)
+			filename_queue = tf.train.string_input_producer([filename,])
+			k, v = reader.read(filename_queue)
+			image_batch.append(tf.image.decode_jpeg(contents=v, channels=IMAGE_DEPTH))
+		yield tf.train.batch(image_batch)
+
+generator = gather_batch(sys.argv[1], BATCH_SIZE)
 			
 # Run!
 with tf.Session() as sess:
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
-	for iteration, x_batch in zip(range(TRAINING_ITERATIONS), gather_batch(sys.argv[1], BATCH_SIZE)):
-		sess.run(optimizer, feed_dict={input_batch:x, keep_prob:TRAINING_DROPOUT_RATE})
+	for iteration, x_batch in zip(range(TRAINING_ITERATIONS), generator):
+		import IPython; IPython.embed()
+		sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob: TRAINING_DROPOUT_RATE})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
 			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
 			print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
