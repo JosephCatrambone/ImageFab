@@ -104,24 +104,24 @@ optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost)
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
 	reader = tf.WholeFileReader()
-	import pdb; pdb.set_trace()
 	while True:
-		#batch = numpy.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH))
 		image_batch = list()
+		#batch = numpy.asarray([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=numpy.float)
 		for index, filename in zip(range(batch_size), iglob(file_glob)):
-			filename_queue = tf.train.string_input_producer([filename,])
-			k, v = reader.read(filename_queue)
-			image_batch.append(tf.image.decode_jpeg(contents=v, channels=IMAGE_DEPTH))
-		yield tf.train.batch(image_batch)
+			img = tf.image.decode_jpeg(contents=tf.read_file(filename), channels=IMAGE_DEPTH)
+			img.set_shape([IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
+			image_batch.append(img)
+		yield tf.train.batch(tensor_list=image_batch, batch_size=batch_size)
 
-generator = gather_batch(sys.argv[1], BATCH_SIZE)
 			
 # Run!
 with tf.Session() as sess:
+	generator = gather_batch(sys.argv[1], BATCH_SIZE)
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
-	for iteration, x_batch in zip(range(TRAINING_ITERATIONS), generator):
-		import IPython; IPython.embed()
+	for iteration in range(TRAINING_ITERATIONS):
+		x_batch = generator.next()
+		import pdb; pdb.set_trace()
 		sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob: TRAINING_DROPOUT_RATE})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
 			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
