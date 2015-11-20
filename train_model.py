@@ -102,20 +102,26 @@ optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
 
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
+	reader = tf.WholeFileReader()
 	while True:
-		batch = numpy.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH))
+		#batch = numpy.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH))
+		filenames = list()
 		for index, filename in zip(range(batch_size), iglob(file_glob)):
-			image = Image.open(filename)
+			filenames.appendfilename)
+		fname_queue = tf.train.string_input_producer(filenames)
+		k, v = reader.read(fname_queue)
+		yield tf.image.decode_jpeg(contents=v, channels=3)
 			
-		
-
+# Run!
 with tf.Session() as sess:
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
-	for iteration in range(TRAINING_ITERATIONS):
+	for iteration, x_batch in zip(range(TRAINING_ITERATIONS), gather_batch()):
 		sess.run(optimizer, feed_dict={input_batch:x, keep_prob:TRAINING_DROPOUT_RATE})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
-			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x, keep_prob:1.0})
+			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
 			print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
 			saver.save(sess, "checkpoint.model", global_step=iteration)
+			#fout = open("example.jpg", 'wb')
+			#tf.image.encode_jpg(
 
