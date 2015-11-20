@@ -17,6 +17,7 @@ IMAGE_DEPTH = 3
 
 def build_encoder(image_batch, keep_prob, representation_size=REPRESENTATION_SIZE):
 	# Conv -> Bias -> Pool -> Norm -> Dropout
+	batch_shape = image_batch.get_shape()
 
 	# Conv 1
 	cw1 = tf.Variable(tf.random_normal([5, 5, batch_shape[3].value, 256]))
@@ -39,27 +40,27 @@ def build_encoder(image_batch, keep_prob, representation_size=REPRESENTATION_SIZ
 	drop2 = tf.nn.dropout(norm2, keep_prob)
 
 	# Record old shape
-	drop_shape = drop.get_shape()
+	drop_shape = drop2.get_shape()
 	drop_length = drop_shape[1].value*drop_shape[2].value*drop_shape[3].value
 
 	# Reshape
-	resh1 = tf.reshape(drop2, [-1, drop_length]]) # Make flat
+	resh1 = tf.reshape(drop2, [-1, drop_length]) # Make flat
 
 	# FC 1
 	wf1 = tf.Variable(tf.random_normal([drop_length, representation_size]))
-	fb1 = tf.Variable(tf.random_normal([representation_size,])
+	fb1 = tf.Variable(tf.random_normal([representation_size,]))
 	full1 = tf.matmul(resh1, wf1) + fb1
 	act3 = tf.nn.relu(full1)
 
 	return act3, [cw1, cw2, wf1], [cb1, cb2, fb1]
 
-def build_decoder(representation_batch, keep_prob, output_shape)
+def build_decoder(representation_batch, keep_prob, output_shape):
 	# FC 2
 	wf2 = tf.Variable(tf.random_normal([
 		representation_batch.get_shape()[1].value, 
 		output_shape[1].value*output_shape[2].value*output_shape[3].value
-	])
-	fb2 = tf.Variable(tf.random_normal([output_shape[1].value*output_shape[2].value*output_shape[3].value,])
+	]))
+	fb2 = tf.Variable(tf.random_normal([output_shape[1].value*output_shape[2].value*output_shape[3].value,]))
 	full2 = tf.matmul(representation_batch, wf2) + fb2
 	act4 = tf.nn.relu(full2)
 
@@ -78,7 +79,7 @@ def build_decoder(representation_batch, keep_prob, output_shape)
 
 	# Conv 4
 	cw4 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 256]))
-	cb4 = tf.Variable(tf.random_normal([256,])
+	cb4 = tf.Variable(tf.random_normal([256,]))
 	conv4 = tf.nn.conv2d(drop3, filter=cw4, strides=[1, 1, 1, 1], padding='SAME')
 	biased4 = tf.nn.bias_add(conv4, cb4)
 	act5 = tf.nn.relu(biased4) # Don't drop last layer.
@@ -107,7 +108,7 @@ def gather_batch(file_glob, batch_size):
 		#batch = numpy.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH))
 		filenames = list()
 		for index, filename in zip(range(batch_size), iglob(file_glob)):
-			filenames.appendfilename)
+			filenames.append(filename)
 		fname_queue = tf.train.string_input_producer(filenames)
 		k, v = reader.read(fname_queue)
 		yield tf.image.decode_jpeg(contents=v, channels=3)
@@ -116,7 +117,7 @@ def gather_batch(file_glob, batch_size):
 with tf.Session() as sess:
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
-	for iteration, x_batch in zip(range(TRAINING_ITERATIONS), gather_batch()):
+	for iteration, x_batch in zip(range(TRAINING_ITERATIONS), gather_batch(sys.argv[1], BATCH_SIZE)):
 		sess.run(optimizer, feed_dict={input_batch:x, keep_prob:TRAINING_DROPOUT_RATE})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
 			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
