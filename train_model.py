@@ -23,7 +23,7 @@ def build_encoder(image_batch, keep_prob, representation_size=REPRESENTATION_SIZ
 	# Conv 1
 	cw1 = tf.Variable(tf.random_normal([5, 5, batch_shape[3].value, 256]))
 	cb1 = tf.Variable(tf.random_normal([256,]))
-	conv1 = tf.nn.conv2d(image_batch, filter=cw1, strides=[1, 1, 1, 1], padding='SAME')
+	conv1 = tf.nn.conv2d(image_batch, filter=cw1, strides=[1, 1, 1, 1], padding='SAME', name="conv1")
 	biased1 = tf.nn.bias_add(conv1, cb1) # Special case of +cb1 which is a 1D-Tensor cast.
 	act1 = tf.nn.relu(biased1)
 	pool1 = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
@@ -31,9 +31,9 @@ def build_encoder(image_batch, keep_prob, representation_size=REPRESENTATION_SIZ
 	drop1 = tf.nn.dropout(norm1, keep_prob)
 	
 	# Conv 2
-	cw2 = tf.Variable(tf.random_normal([5, 5, 1, 256]))
+	cw2 = tf.Variable(tf.random_normal([5, 5, batch_shape[3].value, 256]))
 	cb2 = tf.Variable(tf.random_normal([256,]))
-	conv2 = tf.nn.conv2d(drop1, filter=cw2, strides=[1, 1, 1, 1], padding='SAME')
+	conv2 = tf.nn.conv2d(drop1, filter=cw2, strides=[1, 1, 1, 1], padding='SAME', name="conv2")
 	biased2 = tf.nn.bias_add(conv2, cb2)
 	act2 = tf.nn.relu(biased2)
 	pool2 = tf.nn.max_pool(act2, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
@@ -70,7 +70,7 @@ def build_decoder(representation_batch, keep_prob, output_shape):
 	# Conv 3
 	cw3 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 1]))
 	cb3 = tf.Variable(tf.random_normal([1,]))
-	conv3 = tf.nn.conv2d(resh2, filter=cw3, strides=[1, 1, 1, 1], padding='SAME')
+	conv3 = tf.nn.conv2d(resh2, filter=cw3, strides=[1, 1, 1, 1], padding='SAME', name="deconv1")
 	biased3 = tf.nn.bias_add(conv3, cb3)
 	act5 = tf.nn.relu(biased3)
 	pool3 = tf.nn.max_pool(act5, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
@@ -80,7 +80,7 @@ def build_decoder(representation_batch, keep_prob, output_shape):
 	# Conv 4
 	cw4 = tf.Variable(tf.random_normal([5, 5, output_shape[3].value, 1]))
 	cb4 = tf.Variable(tf.random_normal([1,]))
-	conv4 = tf.nn.conv2d(drop3, filter=cw4, strides=[1, 1, 1, 1], padding='SAME')
+	conv4 = tf.nn.conv2d(drop3, filter=cw4, strides=[1, 1, 1, 1], padding='SAME', name="deconv2")
 	biased4 = tf.nn.bias_add(conv4, cb4)
 	act5 = tf.nn.relu(biased4) # Don't drop last layer.
 
@@ -106,13 +106,11 @@ def gather_batch(file_glob, batch_size):
 	reader = tf.WholeFileReader()
 	while True:
 		image_batch = list()
-		#batch = numpy.asarray([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=numpy.float)
+		batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
 		for index, filename in zip(range(batch_size), iglob(file_glob)):
-			img = tf.image.decode_jpeg(contents=tf.read_file(filename), channels=IMAGE_DEPTH)
-			img.set_shape([IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
-			image_batch.append(img)
-		yield tf.train.batch(tensor_list=image_batch, batch_size=batch_size)
-
+			img = Image.open(filename)
+			batch[index,:,:,:] = np.asarray(img)/255.0
+		yield batch
 			
 # Run!
 with tf.Session() as sess:
@@ -121,7 +119,6 @@ with tf.Session() as sess:
 	sess.run(tf.initialize_all_variables())
 	for iteration in range(TRAINING_ITERATIONS):
 		x_batch = generator.next()
-		import pdb; pdb.set_trace()
 		sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob: TRAINING_DROPOUT_RATE})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
 			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
