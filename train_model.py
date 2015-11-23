@@ -16,12 +16,12 @@ IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
 IMAGE_DEPTH = 3
 
-def build_encoder(image_batch, keep_prob, batch_shape, representation_size):
+def build_encoder(image_batch, keep_prob, image_height, image_width, image_depth, representation_size):
 	# Conv -> Bias -> Pool -> Norm -> Dropout
-	resized = tf.reshape(image_batch, batch_shape)
+	resized = tf.reshape(image_batch, [-1, image_height, image_width, image_depth])
 
 	# Conv 1
-	cw1 = tf.Variable(tf.random_normal([5, 5, batch_shape[3], 256]))
+	cw1 = tf.Variable(tf.random_normal([5, 5, image_depth, 256]))
 	cb1 = tf.Variable(tf.random_normal([256,]))
 	conv1 = tf.nn.conv2d(resized, filter=cw1, strides=[1, 1, 1, 1], padding='SAME')
 	biased1 = tf.nn.bias_add(conv1, cb1) # Special case of +cb1 which is a 1D-Tensor cast.
@@ -31,7 +31,7 @@ def build_encoder(image_batch, keep_prob, batch_shape, representation_size):
 	drop1 = tf.nn.dropout(norm1, keep_prob)
 
 	# Conv 2
-	cw2 = tf.Variable(tf.random_normal([5, batch_shape[3], 256, 128]))
+	cw2 = tf.Variable(tf.random_normal([5, image_depth, 256, 128]))
 	cb2 = tf.Variable(tf.random_normal([128,]))
 	conv2 = tf.nn.conv2d(drop1, filter=cw2, strides=[1, 1, 1, 1], padding='SAME')
 	biased2 = tf.nn.bias_add(conv2, cb2)
@@ -43,7 +43,9 @@ def build_encoder(image_batch, keep_prob, batch_shape, representation_size):
 	# Calculate flat size.
 	#temp = tf.Print(drop2, [drop2.get_shape(),], "Drop2 Shape:")
 	#temp = tf.Print(drop2, [tf.constant(0),], "pool2 Shape: {}".format(pool2.get_shape()))
-	drop_length = batch_shape[1]*batch_shape[2]*batch_shape[3] #tf.size(drop2)/batch_shape[0] #77440 
+	#drop_length = image_height*image_width*image_depth #tf.size(drop2)/batch_shape[0] #77440 
+	pool2_shape = pool2.get_shape()
+	drop_length = pool2_shape[1].value*pool2_shape[2].value*pool2_shape[3].value 
 
 	# Reshape
 	# "Input has 154880 | 77440 values, which isn't divisible by 300."
@@ -58,32 +60,30 @@ def build_encoder(image_batch, keep_prob, batch_shape, representation_size):
 
 	return act3, [cw1, cw2, wf1], [cb1, cb2, fb1]
 
-def build_decoder(representation_batch, keep_prob, output_shape):
+def build_decoder(representation_batch, keep_prob, output_height, output_width, output_depth):
 	# FC 2
 	wf2 = tf.Variable(tf.random_normal([
 		representation_batch.get_shape()[1].value, 
-		output_shape[1].value*output_shape[2].value*output_shape[3].value
+		1024
 	]))
-	fb2 = tf.Variable(tf.random_normal([output_shape[1].value*output_shape[2].value*output_shape[3].value,]))
+	fb2 = tf.Variable(tf.random_normal([1024,]))
 	full2 = tf.matmul(representation_batch, wf2) + fb2
 	act4 = tf.nn.relu(full2)
 
 	# Reshape
-	import pdb; pdb.set_trace()
-	resh3 = tf.reshape(act4, [full2.get_shape()[1].value, -1, 1, output_shape[1].value])
-	resh_missing = resh3.get_shape()[1].value
+	resh3 = tf.reshape(act4, [-1, full2.get_shape()[1].value, 1, output_height])
 
 	# Conv 3
-	cw3 = tf.Variable(tf.random_normal([resh_missing, 1, output_shape[1].value, output_shape[2].value]))
-	cb3 = tf.Variable(tf.random_normal([output_shape[2].value,]))
+	cw3 = tf.Variable(tf.random_normal([full2.get_shape()[1].value, 1, output_height, output_width]))
+	cb3 = tf.Variable(tf.random_normal([output_width,]))
 	conv3 = tf.nn.conv2d(resh3, filter=cw3, strides=[1, 1, 1, 1], padding='SAME', name="deconv1")
 	biased3 = tf.nn.bias_add(conv3, cb3)
 	act5 = tf.nn.relu(biased3)
 	drop3 = tf.nn.dropout(act5, keep_prob)
 
 	# Conv 4
-	cw4 = tf.Variable(tf.random_normal([1, output_shape[1].value, output_shape[2].value, output_shape[3].value]))
-	cb4 = tf.Variable(tf.random_normal([output_shape[3].value,]))
+	cw4 = tf.Variable(tf.random_normal([1, output_height, output_width, output_depth]))
+	cb4 = tf.Variable(tf.random_normal([output_depth,]))
 	conv4 = tf.nn.conv2d(drop3, filter=cw4, strides=[1, 1, 1, 1], padding='SAME', name="deconv2")
 	biased4 = tf.nn.bias_add(conv4, cb4)
 	act5 = tf.nn.relu(biased4) # Don't drop last layer.
@@ -91,15 +91,16 @@ def build_decoder(representation_batch, keep_prob, output_shape):
 	return act5, [wf2, cw3, cw4], [fb2, cb3, cb4]
 
 # Define objects
-batch_shape = tf.placeholder(tf.types.int32, shape=(4,))
-representation_size = tf.placeholder(tf.types.int32)
 input_batch = tf.placeholder(tf.types.float32, [None, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
 encoded_batch = tf.placeholder(tf.types.float32, [None, REPRESENTATION_SIZE])
 keep_prob = tf.placeholder(tf.types.float32)
 
-encoder, encoder_weights, encoder_biases = build_encoder(input_batch, keep_prob, batch_shape, representation_size)
-autoencoder, ae_weights, ae_biases = build_decoder(encoder, keep_prob, input_batch.get_shape())
-decoder, decoder_weights, decoder_biases = build_decoder(encoded_batch, tf.constant(1.0), input_batch.get_shape())
+encoder, encoder_weights, encoder_biases = build_encoder(
+	input_batch, keep_prob, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH, REPRESENTATION_SIZE)
+autoencoder, ae_weights, ae_biases = build_decoder(
+	encoder, keep_prob, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH)
+decoder, decoder_weights, decoder_biases = build_decoder(
+	encoded_batch, tf.constant(1.0), IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH)
 
 # Define goals
 l1_cost = tf.reduce_mean(tf.abs(input_batch - autoencoder))
@@ -125,7 +126,7 @@ with tf.Session() as sess:
 	sess.run(tf.initialize_all_variables())
 	for iteration in range(TRAINING_ITERATIONS):
 		x_batch = generator.next()
-		sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob: TRAINING_DROPOUT_RATE, batch_shape: tf.constant([BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])})
+		sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob: TRAINING_DROPOUT_RATE})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
 			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
 			print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
