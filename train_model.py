@@ -23,8 +23,6 @@ class ConvolutionalAutoencoder(object):
 		self.to_encode = to_encode
 		self.to_decode = to_decode
 
-		self.encoder_inputs = list()
-		self.decoder_inputs = list()
 		self.encoder_operations = list()
 		self.decoder_operations = list()
 		self.pretrainer_operations = list() # Used for layer-wise pretraining. pretrainer_operations[0] is encoder -> hidden state -> decoder. 
@@ -33,25 +31,29 @@ class ConvolutionalAutoencoder(object):
 		self.decoder_weights = list()
 		self.decoder_biases = list()
 
-	def add_fc_layer(self, to_encode, to_decode, input_size, output_size):
-		# Add encode/decode
-		self.encoder_inputs.append(to_encode)
-		self.decoder_inputs.append(to_decode)
+		# Build queue starts as a list and, after the AE is built, becomes None.
+		# Stores a list of tuple of (type_name, args)
+		self.build_queue = list() 
 
+	def add_fc(self, input_size, output_size):
+		self.build_queue.append(('fc', (input_size, output_size)))
+
+	def _add_fc_encoder(self, input_to_encode, input_size, output_size):
 		# Encode is straightforward.  Data always comes in the same way.
 		we = tf.Variable(tf.random_normal([input_size, output_size]))
 		be = tf.Variable(tf.random_normal([output_size,]))
-		fc1 = tf.matmul(to_encode, we) + be
+		fc1 = tf.matmul(input_to_encode, we) + be
 		act1 = tf.nn.relu(fc1)
 
 		self.encoder_operations.append(act1)
 		self.encoder_weights.append(we)
 		self.encoder_biases.append(wb)
 
+	def _add_fc_decoder(self, signal_from_encoder, input_to_decode, input_size, output_size):
 		# Decode requires two steps.  First, decoder path.
 		wd = tf.Variable(tf.random_normal([output_size, input_size]))
 		bd = tf.Variable(tf.random_normal([input_size, ]))
-		fc2 = tf.matmul(to_decode, wd) + bd
+		fc2 = tf.matmul(input_to_decode, wd) + bd
 		act2 = tf.nn.relu(fc2)
 
 		self.decoder_operations.append(act2)
@@ -59,45 +61,48 @@ class ConvolutionalAutoencoder(object):
 		self.decoder_biases.append(bd)
 
 		# Second, autoencoder path.
-		fc3 = tf.matmul(act1, wd) + bd
+		fc3 = tf.matmul(signal_from_encoder, wd) + bd
 		act3 = tf.nn.relu(fc3)
 		self.pretrainer_operations.append(act3)
 
 	def add_conv2d(self, batch_size, input_height, input_width, input_depth, num_filters):
-		# Encode phase
-		to_encode = tf.placeholder(tf.types.float32, [None, input_height, input_width, input_depth])
+		self.build_queue.append(('conv', (batch_size, input_height, input_width, input_depth, num_filters)))
 
+	def _add_conv_encoder(self, input_to_encode, batch_size, input_height, input_width, input_depth, num_filters):
+		# Encode phase
 		we = tf.Variable(tf.random_normal([input_height, input_width, input_depth, num_filters]))
 		be = tf.Variable(tf.random_normal([num_filters,]))
-		conv = tf.nn.conv2d(to_encode, filter=we, strides=[1, 1, 1, 1], padding='SAME') + be
+		conv = tf.nn.conv2d(input_to_encode, filter=we, strides=[1, 1, 1, 1], padding='SAME') + be
 		act1 = tf.nn.relu(conv)
 		pool = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
 		norm = tf.nn.lrn(pool, 5, bias=1.0, alpha=0.001, beta=0.75)
 
-		self.encoder_inputs.append(to_encode)
 		self.encoder_operations.append(norm)
 		self.encoder_weights.append(we)
 		self.encoder_biases.append(be)
 
+	def _add_conv_decoder(self, signal_from_encoder, input_to_decode, batch_size, input_height, input_width, input_depth, num_filters):
 		# Decode phase
-		dec_shape = norm.get_shape().as_list()
+		dec_shape = signal_from_encoder.get_shape().as_list()
 		to_decode = tf.placeholder(tf.types.float32, [None, dec_shape[0], dec_shape[1], dec_shape[2]])
 
 		wd = tf.Variable(tf.random_normal([input_height, input_width, input_depth, num_filters]))
 		bd = tf.Variable(tf.random_normal([num_filters,]))
-		deconv = tf.nn.deconv2d(to_decode, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=[batch_size, input_height, input_width, input_depth]) + bd
+		deconv = tf.nn.deconv2d(input_to_decode, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=[batch_size, input_height, input_width, input_depth]) + bd
 		act2 = tff.nn.relu(deconv)
 
-		self.decoder_inputs.append(to_decode)
 		self.decoder_operations.append(act2)
 		self.decoder_weights.append(wd)
 		self.decoder_biases.append(bd)
 
 		# Autoencode phase
-		autoenc = tf.nn.deconv2d(norm, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=[batch_size, input_height, input_width, input_depth]) + bd
+		autoenc = tf.nn.deconv2d(signal_from_encoder, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=[batch_size, input_height, input_width, input_depth]) + bd
 		self.pretrainer_operations.append(autoenc)
 
-	def add_flatten(self, to_encode, to_decode, batch_size, input_height, input_width, input_depth):
+	def add_flatten(self, batch_size, input_height, input_width, input_depth):
+		self.build_queue.append(('flatten', (batch_size, input_height, input_width, input_depth)))
+
+	def _add_flatten_encoder(self, to_encode, batch_size, input_height, input_width, input_depth):
 		# Encode
 		flatten = tf.reshape(to_encode, [batch_size, input_height*input_width*input_depth])
 
@@ -105,29 +110,45 @@ class ConvolutionalAutoencoder(object):
 		self.encoder_weights.append(None)
 		self.encoder_biases.append(None)
 
+	def _add_flatten_decoder(self, signal_from_encoder, input_to_decode, batch_size, input_height, input_width, input_depth):
 		# Decode
-		unflatten = tf.reshape(to_decode, [batch_size, input_height, input_width, input_depth])
+		unflatten = tf.reshape(input_to_decode, [batch_size, input_height, input_width, input_depth])
 
 		self.decoder_operations.append(unflatten)
 		self.decoder_weights.append(None)
 		self.decoder_biases.append(None)
 
 		# Not strictly necessary, but...
-		autoenc = tf.reshape(flatten, [batch_size, input_height, input_width, input_depth])
+		autoenc = tf.reshape(signal_from_encoder, [batch_size, input_height, input_width, input_depth])
 		self.pretrainer_operations.append(autoenc)
 
 	def get_output_shape(self):
 		return self.encoder_operations[-1].get_shape()
 
-	def get_layer_trainer(self, layer_num):
-		operation_chain = list()
-		operation_chain.append(self.to_encode)
-		for i in range(layer_num):
-			last_result = tf.assign(last_result, self.encoder_operations[i])
+	def build():
+		last_encoder = self.to_encode
+		for op, args in	self.build_queue:
+			if op == 'fc':
+				self._add_fc_encoder(last_encoder, *args)
+			elif op == 'conv':
+				self._add_conv_encoder(last_encoder, *args)
+			elif op == 'flatten':
+				self._add_flatten_encoder(last_encoder, *args)
+			last_encoder = self.encoder_operations[-1]
 
+		last_decoder = self.to_decode
+		for index, (op, args) in enumerate(self.build_queue):
+			if op == 'fc':
+				self._add_fc_decoder(self.encoder_operations[index], last_decoder, *args)
+			elif op == 'conv':
+				self._add_conv_decoder(self.encoder_operations[index], last_decoder, *args)
+			elif op == 'flatten':
+				self._add_flatten_decoder(self.encoder_operations[index], last_decoder, *args)
+			last_decoder = self.decoder_operations[-1]
+
+		self.build_queue = None
 
 # Define objects
-keep_prob = tf.placeholder(tf.types.float32) #dropout
 batch_shape = tf.placeholder(tf.types.int32, shape=(4,))
 representation_size = tf.placeholder(tf.types.int32)
 input_batch = tf.placeholder(tf.types.float32, [None, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
@@ -140,6 +161,10 @@ autoencoder.add_conv2d(1, out_shape[1], out_shape[2], out_shape[3], 128)
 out_shape = autoencoder.get_output_shape().as_list()
 autoencoder.add_conv2d(1, out_shape[1], out_shape[2], out_shape[3], 128)
 out_shape = autoencoder.get_output_shape().as_list()
+autoencoder.add_flatten(1, out_shape[1], out_shape[2], out_shape[3])
+out_shape = autoencoder.get_output_shape().as_list()
+autoencoder.add_fc(out_shape[1], REPRESENTATION_SIZE)
+autoencoder.build()
 
 # Define goals
 l1_cost = tf.reduce_mean(tf.abs(input_batch - autoencoder))
