@@ -33,10 +33,13 @@ class ConvolutionalAutoencoder(object):
 
 		# Build queue starts as a list and, after the AE is built, becomes None.
 		# Stores a list of tuple of (type_name, args)
+		self._last_encoder = self.to_encode
 		self.build_queue = list() 
 
 	def add_fc(self, input_size, output_size):
 		self.build_queue.append(('fc', (input_size, output_size)))
+		self._add_fc_encoder(self._last_encoder, input_size, output_size)
+		self._last_encoder = self.encoder_operations[-1]
 
 	def _add_fc_encoder(self, input_to_encode, input_size, output_size):
 		# Encode is straightforward.  Data always comes in the same way.
@@ -47,7 +50,7 @@ class ConvolutionalAutoencoder(object):
 
 		self.encoder_operations.append(act1)
 		self.encoder_weights.append(we)
-		self.encoder_biases.append(wb)
+		self.encoder_biases.append(be)
 
 	def _add_fc_decoder(self, signal_from_encoder, input_to_decode, input_size, output_size):
 		# Decode requires two steps.  First, decoder path.
@@ -67,6 +70,8 @@ class ConvolutionalAutoencoder(object):
 
 	def add_conv2d(self, batch_size, input_height, input_width, input_depth, num_filters):
 		self.build_queue.append(('conv', (batch_size, input_height, input_width, input_depth, num_filters)))
+		self._add_conv_encoder(self._last_encoder, batch_size, input_height, input_width, input_depth, num_filters)
+		self._last_encoder = self.encoder_operations[-1]
 
 	def _add_conv_encoder(self, input_to_encode, batch_size, input_height, input_width, input_depth, num_filters):
 		# Encode phase
@@ -75,21 +80,20 @@ class ConvolutionalAutoencoder(object):
 		conv = tf.nn.conv2d(input_to_encode, filter=we, strides=[1, 1, 1, 1], padding='SAME') + be
 		act1 = tf.nn.relu(conv)
 		pool = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
-		norm = tf.nn.lrn(pool, 5, bias=1.0, alpha=0.001, beta=0.75)
+		#norm = tf.nn.lrn(pool, 5, bias=1.0, alpha=0.001, beta=0.75)
 
-		self.encoder_operations.append(norm)
+		self.encoder_operations.append(pool)
 		self.encoder_weights.append(we)
 		self.encoder_biases.append(be)
 
 	def _add_conv_decoder(self, signal_from_encoder, input_to_decode, batch_size, input_height, input_width, input_depth, num_filters):
 		# Decode phase
 		dec_shape = signal_from_encoder.get_shape().as_list()
-		to_decode = tf.placeholder(tf.types.float32, [None, dec_shape[0], dec_shape[1], dec_shape[2]])
 
 		wd = tf.Variable(tf.random_normal([input_height, input_width, input_depth, num_filters]))
-		bd = tf.Variable(tf.random_normal([num_filters,]))
+		bd = tf.Variable(tf.random_normal([input_height, input_width, input_depth,]))
 		deconv = tf.nn.deconv2d(input_to_decode, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=[batch_size, input_height, input_width, input_depth]) + bd
-		act2 = tff.nn.relu(deconv)
+		act2 = tf.nn.relu(deconv)
 
 		self.decoder_operations.append(act2)
 		self.decoder_weights.append(wd)
@@ -101,6 +105,8 @@ class ConvolutionalAutoencoder(object):
 
 	def add_flatten(self, batch_size, input_height, input_width, input_depth):
 		self.build_queue.append(('flatten', (batch_size, input_height, input_width, input_depth)))
+		self._add_flatten_encoder(self._last_encoder, batch_size, input_height, input_width, input_depth)
+		self._last_encoder = self.encoder_operations[-1]
 
 	def _add_flatten_encoder(self, to_encode, batch_size, input_height, input_width, input_depth):
 		# Encode
@@ -122,31 +128,45 @@ class ConvolutionalAutoencoder(object):
 		autoenc = tf.reshape(signal_from_encoder, [batch_size, input_height, input_width, input_depth])
 		self.pretrainer_operations.append(autoenc)
 
+	def get_layer_count(self):
+		return len(self.encoder_operations)
+
 	def get_output_shape(self):
 		return self.encoder_operations[-1].get_shape()
 
-	def build():
-		last_encoder = self.to_encode
-		for op, args in	self.build_queue:
-			if op == 'fc':
-				self._add_fc_encoder(last_encoder, *args)
-			elif op == 'conv':
-				self._add_conv_encoder(last_encoder, *args)
-			elif op == 'flatten':
-				self._add_flatten_encoder(last_encoder, *args)
-			last_encoder = self.encoder_operations[-1]
+	def get_encoder_output(self, layer):
+		return self.encoder_operations[layer]
 
+	def get_decoder_output(self, layer):
+		# NOTE: This corresponds to the output of encoder [layer], so if we decode in order from the top,
+		# we'll have to run it through decoder_operations in reverse.
+		# When being build, it is in the 'correct' order for reconstruction, but we flip it after build
+		# to make it match up (since the graph is in the right order anyway).
+		return self.decoder_operations[layer]
+
+	def get_autoencoder_output(self, layer):
+		return self.pretrainer_operations[layer]
+
+	def finalize(self):
 		last_decoder = self.to_decode
-		for index, (op, args) in enumerate(self.build_queue):
+		for index, (op, args) in enumerate(reversed(self.build_queue)):
 			if op == 'fc':
-				self._add_fc_decoder(self.encoder_operations[index], last_decoder, *args)
+				self._add_fc_decoder(self.encoder_operations[-(1+index)], last_decoder, *args)
 			elif op == 'conv':
-				self._add_conv_decoder(self.encoder_operations[index], last_decoder, *args)
+				self._add_conv_decoder(self.encoder_operations[-(1+index)], last_decoder, *args)
 			elif op == 'flatten':
-				self._add_flatten_decoder(self.encoder_operations[index], last_decoder, *args)
+				self._add_flatten_decoder(self.encoder_operations[-(1+index)], last_decoder, *args)
 			last_decoder = self.decoder_operations[-1]
 
+		# We appended things from the top-leve to the bottom, so decoder[n] corresponds to encoder[0].
+		# Flip all the fields so they match.  
+		self.decoder_operations.reverse()
+		self.decoder_weights.reverse()
+		self.decoder_biases.reverse()
+		self.pretrainer_operations.reverse()
+
 		self.build_queue = None
+		self._last_encoder = None
 
 # Define objects
 batch_shape = tf.placeholder(tf.types.int32, shape=(4,))
@@ -159,18 +179,10 @@ autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
 out_shape = [1, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH]
 autoencoder.add_conv2d(1, out_shape[1], out_shape[2], out_shape[3], 128)
 out_shape = autoencoder.get_output_shape().as_list()
-autoencoder.add_conv2d(1, out_shape[1], out_shape[2], out_shape[3], 128)
-out_shape = autoencoder.get_output_shape().as_list()
 autoencoder.add_flatten(1, out_shape[1], out_shape[2], out_shape[3])
 out_shape = autoencoder.get_output_shape().as_list()
 autoencoder.add_fc(out_shape[1], REPRESENTATION_SIZE)
-autoencoder.build()
-
-# Define goals
-l1_cost = tf.reduce_mean(tf.abs(input_batch - autoencoder))
-l2_cost = tf.reduce_sum(tf.pow(input_batch - autoencoder, 2))
-cost = l2_cost
-optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost)
+autoencoder.finalize()
 
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
@@ -190,7 +202,15 @@ with tf.Session() as sess:
 	sess.run(tf.initialize_all_variables())
 	for iteration in range(TRAINING_ITERATIONS):
 		x_batch = generator.next()
-		sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob: TRAINING_DROPOUT_RATE, batch_shape: tf.constant([BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])})
+		# NOTE: This is the wrong way to train.  Should _fully_ train lower layers before moving up, but laziness prevails over all.
+		for layer in range(autoencoder.get_layer_count()):
+			out = autoencoder.get_autoencoder_output(layer)
+			# Define goals
+			#l1_cost = tf.reduce_mean(tf.abs(input_batch - out))
+			l2_cost = tf.reduce_sum(tf.pow(input_batch - out, 2))
+			cost = l2_cost
+			optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost)
+			sess.run(optimizer, feed_dict={input_batch:x_batch})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
 			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
 			print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
