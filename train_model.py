@@ -78,23 +78,25 @@ class ConvolutionalAutoencoder(object):
 		act3 = tf.nn.relu(fc3)
 		self.pretrainer_operations.append(act3)
 
-	def add_conv2d(self, filter_height, filter_width, filter_depth, num_filters):
+	def add_conv2d(self, filter_height, filter_width, filter_depth, num_filters, strides=None):
+		if not strides:
+			strides = [1, 1, 1, 1]
 		input_size = self._last_encoder.get_shape().as_list()
 		filter_shape = [filter_height, filter_width, filter_depth, num_filters]
 
-		self._add_conv_encoder(self._last_encoder, filter_shape)
+		self._add_conv_encoder(self._last_encoder, filter_shape, strides)
 		self._last_encoder = self.encoder_operations[-1]
 
 		encoder_ref = self.encoder_operations[-1]
 		def anon(signal_to_decode):
-			self._add_conv_decoder(encoder_ref, signal_to_decode, input_size, filter_shape)
+			self._add_conv_decoder(encoder_ref, signal_to_decode, input_size, filter_shape, strides)
 		self.build_queue.append(anon)
 
-	def _add_conv_encoder(self, input_to_encode, filter_shape):
+	def _add_conv_encoder(self, input_to_encode, filter_shape, strides):
 		# Encode phase
 		we = tf.Variable(tf.random_normal(filter_shape))
 		be = tf.Variable(tf.random_normal([filter_shape[-1],]))
-		conv = tf.nn.conv2d(input_to_encode, filter=we, strides=[1, 1, 1, 1], padding='SAME') + be
+		conv = tf.nn.conv2d(input_to_encode, filter=we, strides=strides, padding='SAME') + be
 		act1 = tf.nn.relu(conv)
 		#pool = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
 		#norm = tf.nn.lrn(pool, 5, bias=1.0, alpha=0.001, beta=0.75)
@@ -103,13 +105,13 @@ class ConvolutionalAutoencoder(object):
 		self.encoder_weights.append(we)
 		self.encoder_biases.append(be)
 
-	def _add_conv_decoder(self, signal_from_encoder, input_to_decode, input_size, filter_size):
+	def _add_conv_decoder(self, signal_from_encoder, input_to_decode, input_size, filter_size, strides):
 		# Decode phase
 		dec_shape = signal_from_encoder.get_shape().as_list()
 
 		wd = tf.Variable(tf.random_normal(filter_size))
 		bd = tf.Variable(tf.random_normal([input_size[1], input_size[2], input_size[3],]))
-		deconv = tf.nn.deconv2d(input_to_decode, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=input_size) + bd
+		deconv = tf.nn.deconv2d(input_to_decode, filter=wd, strides=strides, padding='SAME', output_shape=input_size) + bd
 		act2 = tf.nn.relu(deconv)
 
 		self.decoder_operations.append(act2)
@@ -211,6 +213,9 @@ with tf.Session() as sess:
 
 	# Populate autoencoder in session and gather pretrainers.
 	autoencoder.add_conv2d(5, 5, 3, 128)
+	autoencoder.add_conv2d(5, 5, 128, 32)
+	autoencoder.add_conv2d(10, 10, 32, 1) #, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(10, 10, 1, 1) #, strides=[1, 5, 5, 1])
 	autoencoder.add_flatten()
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()

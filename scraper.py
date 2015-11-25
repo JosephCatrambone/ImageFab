@@ -2,12 +2,13 @@
 
 import sys, os
 from io import BytesIO
+import time
 
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 
-def download_page(url, target_width, target_height, crop=False, pad=True, file_prefix="", target_extension="jpg", encoding="JPEG", image_links=True, image_embeds=False):
+def download_page(url, target_width, target_height, crop=False, pad=True, file_prefix="", target_extension="jpg", encoding="JPEG", image_links=True, image_embeds=False, delay=0.1):
 	# If crop = True, we cut into a section of the image after rescaling.
 	# If pad = True, we pad the image on either side.
 	print("Getting URL {}".format(url))
@@ -15,6 +16,7 @@ def download_page(url, target_width, target_height, crop=False, pad=True, file_p
 	soup = BeautifulSoup(result.content, 'html.parser')
 	# Get image URL
 	print("Found {} links.".format(len(soup.find_all('a'))))
+	print("Found {} embeds.".format(len(soup.find_all('img'))))
 	index = 0
 	if image_links:
 		for link in soup.find_all('a'):
@@ -22,11 +24,13 @@ def download_page(url, target_width, target_height, crop=False, pad=True, file_p
 			img_src = link.get('href')
 			if img_src is not None and img_src.endswith(target_extension):
 				index = get_image(img_src, target_width, target_height, crop, pad, file_prefix, encoding, index)
+				time.sleep(delay)
 	if image_embeds:
 		for link in soup.find_all('img'):
 			img_src = link.get('src')
 			if img_src is not None and img_src.endswith(target_extension):
 				index = get_image(img_src, target_width, target_height, crop, pad, file_prefix, encoding, index)
+				time.sleep(delay)
 
 def get_image(img_src, target_width, target_height, crop, pad, file_prefix, target_extension, index):
 	print("Getting {}".format(img_src))
