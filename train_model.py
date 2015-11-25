@@ -31,6 +31,9 @@ class ConvolutionalAutoencoder(object):
 		self.decoder_weights = list()
 		self.decoder_biases = list()
 
+		self.encoder_operations.append(to_encode)
+		#self.decoder_operations.append(to_decode)
+
 		# Build queue stores a list of anonymous functions which accept the encoder_signal and the decoder_input.
 		# After finalization, each of the functions is called in reverse order to build the decoder stream.
 		# Then the build_queue is destroyed.
@@ -164,7 +167,8 @@ class ConvolutionalAutoencoder(object):
 		# to make it match up (since the graph is in the right order anyway).
 		return self.decoder_operations[layer]
 
-	def get_autoencoder_output(self, layer):
+	def get_pretrainer_output(self, layer):
+		# Similar to get decoder_output, but uses a short-circuited path, rather than the top-most decoder stream.
 		return self.pretrainer_operations[layer]
 
 	def finalize(self):
@@ -187,12 +191,7 @@ class ConvolutionalAutoencoder(object):
 input_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
 encoded_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, REPRESENTATION_SIZE]) # Replace BATCH_SIZE with None
 keep_prob = tf.placeholder(tf.types.float32)
-
 autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
-autoencoder.add_conv2d(5, 5, 3, 128)
-autoencoder.add_flatten()
-autoencoder.add_fc(REPRESENTATION_SIZE)
-autoencoder.finalize()
 
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
@@ -207,23 +206,37 @@ def gather_batch(file_glob, batch_size):
 			
 # Run!
 with tf.Session() as sess:
+	# Spin up data iterator.
 	generator = gather_batch(sys.argv[1], BATCH_SIZE)
+
+	# Populate autoencoder in session and gather pretrainers.
+	autoencoder.add_conv2d(5, 5, 3, 128)
+	autoencoder.add_flatten()
+	autoencoder.add_fc(REPRESENTATION_SIZE)
+	autoencoder.finalize()
+
+	# Collect trainers.
+	optimizers = list()
+	for layer in range(autoencoder.get_layer_count()-1):
+		enc = autoencoder.get_encoder_output(layer)
+		dec = autoencoder.get_pretrainer_output(layer)
+		print("Enc shape: {}".format(enc.get_shape()))
+		print("Dec shape: {}".format(dec.get_shape()))
+		l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
+		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
+		optimizers.append(optimizer)
+
+	# Init variables and train all the things.
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
 	for iteration in range(TRAINING_ITERATIONS):
 		x_batch = generator.next()
 		# NOTE: This is the wrong way to train.  Should _fully_ train lower layers before moving up, but laziness prevails over all.
-		for layer in range(autoencoder.get_layer_count()):
-			out = autoencoder.get_autoencoder_output(layer)
-			# Define goals
-			#l1_cost = tf.reduce_mean(tf.abs(input_batch - out))
-			l2_cost = tf.reduce_sum(tf.pow(input_batch - out, 2))
-			cost = l2_cost
-			optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost)
+		for optimizer in optimizers:
 			sess.run(optimizer, feed_dict={input_batch:x_batch})
 		if iteration % TRAINING_REPORT_INTERVAL == 0:
-			l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
-			print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
+			#l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
+			#print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
 			saver.save(sess, "checkpoint.model", global_step=iteration)
 			#fout = open("example.jpg", 'wb')
 			#tf.image.encode_jpg(
