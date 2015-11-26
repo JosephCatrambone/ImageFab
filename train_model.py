@@ -32,7 +32,7 @@ class ConvolutionalAutoencoder(object):
 		self.decoder_biases = list()
 
 		self.encoder_operations.append(to_encode)
-		#self.decoder_operations.append(to_decode)
+		self.decoder_operations.append(to_decode)
 
 		# Build queue stores a list of anonymous functions which accept the encoder_signal and the decoder_input.
 		# After finalization, each of the functions is called in reverse order to build the decoder stream.
@@ -109,6 +109,7 @@ class ConvolutionalAutoencoder(object):
 		# Decode phase
 		dec_shape = signal_from_encoder.get_shape().as_list()
 
+		# Deconv2D args:
 		wd = tf.Variable(tf.random_normal(filter_size))
 		bd = tf.Variable(tf.random_normal([input_size[1], input_size[2], input_size[3],]))
 		deconv = tf.nn.deconv2d(input_to_decode, filter=wd, strides=strides, padding='SAME', output_shape=input_size) + bd
@@ -119,7 +120,7 @@ class ConvolutionalAutoencoder(object):
 		self.decoder_biases.append(bd)
 
 		# Autoencode phase
-		autoenc = tf.nn.deconv2d(signal_from_encoder, filter=wd, strides=[1, 1, 1, 1], padding='SAME', output_shape=input_size) + bd
+		autoenc = tf.nn.deconv2d(signal_from_encoder, filter=wd, strides=strides, padding='SAME', output_shape=input_size) + bd
 		self.pretrainer_operations.append(autoenc)
 
 	def add_flatten(self):
@@ -214,8 +215,8 @@ with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
 	autoencoder.add_conv2d(5, 5, 3, 128)
 	autoencoder.add_conv2d(5, 5, 128, 32)
-	autoencoder.add_conv2d(10, 10, 32, 1) #, strides=[1, 5, 5, 1])
-	autoencoder.add_conv2d(10, 10, 1, 1) #, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(10, 10, 32, 1)#, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(10, 10, 1, 1, strides=[1, 5, 5, 1])
 	autoencoder.add_flatten()
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
@@ -225,8 +226,6 @@ with tf.Session() as sess:
 	for layer in range(autoencoder.get_layer_count()-1):
 		enc = autoencoder.get_encoder_output(layer)
 		dec = autoencoder.get_pretrainer_output(layer)
-		print("Enc shape: {}".format(enc.get_shape()))
-		print("Dec shape: {}".format(dec.get_shape()))
 		l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
 		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
 		optimizers.append(optimizer)
