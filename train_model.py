@@ -11,7 +11,7 @@ import tensorflow as tf
 LEARNING_RATE = 0.01
 TRAINING_ITERATIONS = 1000000
 TRAINING_DROPOUT_RATE = 0.8
-TRAINING_REPORT_INTERVAL = 100
+TRAINING_REPORT_INTERVAL = 1
 REPRESENTATION_SIZE = 64
 BATCH_SIZE = 5
 IMAGE_WIDTH = 256
@@ -191,6 +191,8 @@ class ConvolutionalAutoencoder(object):
 
 		self.build_queue = None
 		self._last_encoder = None
+		del self.build_queue
+		del self._last_encoder
 
 # Define objects
 input_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
@@ -244,17 +246,32 @@ with tf.Session() as sess:
 	encoder = autoencoder.get_encoder_output()
 	decoder = autoencoder.get_decoder_output()
 
-	# Init variables and train all the things.
+	# Init variables.
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
+
+	# If we already have a trained network, reload that. The saver doesn't save the graph structure, so we need to build one with identical node names and reload it here.
+	# Right now the graph can be loaded with tf.import_graph_def OR the variables can be populated with Restore, but not both (yet).
+	# The graph.pbtxt holds graph structure (in model folder).  model-checkpoint has values/weights.
+	# TODO: Review when bug is fixed. (2015/11/29)
+	if os.path.isfile("checkpoint.model"):
+		saver.restore(sess, "checkpoint.model")
+
+	# Begin training
 	for optimizer in optimizers:
 		for iteration in range(TRAINING_ITERATIONS):
 			x_batch = generator.next()
 			sess.run(optimizer, feed_dict={input_batch:x_batch})
 			if iteration % TRAINING_REPORT_INTERVAL == 0:
+				# Checkpoint progress
 				print("Finished batch {}".format(iteration))
 				saver.save(sess, "checkpoint.model", global_step=iteration)
+
+				# Render output sample
 				encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
+				#np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])
+
+				
 				#img_tensor = tf.image.encode_jpeg(decoded[0])
 				img_arr = np.asarray(decoded[0], dtype=np.uint8)
 				img = Image.fromarray(img_arr)
