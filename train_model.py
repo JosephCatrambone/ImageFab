@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 import sys, os
-from glob import iglob
+from glob import glob
+from random import choice
+from io import BytesIO
 
 from PIL import Image
 import numpy as np
 import tensorflow as tf
 
 LEARNING_RATE = 0.01
-TRAINING_ITERATIONS = 10000
+TRAINING_ITERATIONS = 1000000
 TRAINING_DROPOUT_RATE = 0.8
 TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 64
@@ -151,7 +153,7 @@ class ConvolutionalAutoencoder(object):
 		self.decoder_biases.append(None)
 
 		# Not strictly necessary, but...
-		autoenc = tf.reshape(signal_from_encoder, [batch_size, input_height, input_width, input_depth])
+		autoenc = tf.reshape(signal_from_encoder, [-1, input_height, input_width, input_depth])
 		self.pretrainer_operations.append(autoenc)
 
 	def get_layer_count(self):
@@ -160,10 +162,10 @@ class ConvolutionalAutoencoder(object):
 	def get_output_shape(self):
 		return self.encoder_operations[-1].get_shape()
 
-	def get_encoder_output(self, layer):
+	def get_encoder_output(self, layer=-1):
 		return self.encoder_operations[layer]
 
-	def get_decoder_output(self, layer):
+	def get_decoder_output(self, layer=0):
 		# NOTE: This corresponds to the output of encoder [layer], so if we decode in order from the top,
 		# we'll have to run it through decoder_operations in reverse.
 		# When being build, it is in the 'correct' order for reconstruction, but we flip it after build
@@ -199,12 +201,20 @@ autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
 	reader = tf.WholeFileReader()
+	filenames = glob(file_glob)
 	while True:
-		image_batch = list()
 		batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
-		for index, filename in zip(range(batch_size), iglob(file_glob)):
-			img = Image.open(filename)
-			batch[index,:,:,:] = np.asarray(img)/255.0
+		num_samples = 0
+		while num_samples < batch_size:
+			try:
+				filename = choice(filenames)
+				img = Image.open(filename)
+				print("Loaded image {}".format(filename))
+				batch[num_samples,:,:,:] = np.asarray(img, dtype=np.float)/255.0
+				num_samples += 1
+			except ValueError as e:
+				print("Problem loading image {}: {}".format(filename, e))
+				continue
 		yield batch
 			
 # Run!
@@ -215,7 +225,7 @@ with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
 	autoencoder.add_conv2d(5, 5, 3, 128)
 	autoencoder.add_conv2d(5, 5, 128, 32)
-	autoencoder.add_conv2d(10, 10, 32, 1)#, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(10, 10, 32, 1, strides=[1, 5, 5, 1])
 	autoencoder.add_conv2d(10, 10, 1, 1, strides=[1, 5, 5, 1])
 	autoencoder.add_flatten()
 	autoencoder.add_fc(REPRESENTATION_SIZE)
@@ -230,18 +240,27 @@ with tf.Session() as sess:
 		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
 		optimizers.append(optimizer)
 
+	# Get final ops
+	encoder = autoencoder.get_encoder_output()
+	decoder = autoencoder.get_decoder_output()
+
 	# Init variables and train all the things.
 	saver = tf.train.Saver()
 	sess.run(tf.initialize_all_variables())
-	for iteration in range(TRAINING_ITERATIONS):
-		x_batch = generator.next()
-		# NOTE: This is the wrong way to train.  Should _fully_ train lower layers before moving up, but laziness prevails over all.
-		for optimizer in optimizers:
+	for optimizer in optimizers:
+		for iteration in range(TRAINING_ITERATIONS):
+			x_batch = generator.next()
 			sess.run(optimizer, feed_dict={input_batch:x_batch})
-		if iteration % TRAINING_REPORT_INTERVAL == 0:
-			#l1_score, l2_score = sess.run([l1_cost, l2_cost], feed_dict={input_batch:x_batch, keep_prob:1.0})
-			#print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
-			saver.save(sess, "checkpoint.model", global_step=iteration)
-			#fout = open("example.jpg", 'wb')
-			#tf.image.encode_jpg(
+			if iteration % TRAINING_REPORT_INTERVAL == 0:
+				print("Finished batch {}".format(iteration))
+				saver.save(sess, "checkpoint.model", global_step=iteration)
+				encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
+				#img_tensor = tf.image.encode_jpeg(decoded[0])
+				img_arr = np.asarray(decoded[0], dtype=np.uint8)
+				img = Image.fromarray(img_arr)
+				img.save("test{}.jpg".format(iteration))
+				#img = Image.open(BytesIO(result2.content))
+				#print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
+				#fout = open("example.jpg", 'wb')
+				#tf.image.encode_jpg(
 
