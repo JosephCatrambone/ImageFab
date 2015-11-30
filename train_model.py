@@ -9,11 +9,11 @@ import numpy as np
 import tensorflow as tf
 
 LEARNING_RATE = 0.01
-TRAINING_ITERATIONS = 1000000
+TRAINING_ITERATIONS = 10000
 TRAINING_DROPOUT_RATE = 0.8
-TRAINING_REPORT_INTERVAL = 1
+TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 64
-BATCH_SIZE = 5
+BATCH_SIZE = 1
 IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
 IMAGE_DEPTH = 3
@@ -254,8 +254,9 @@ with tf.Session() as sess:
 	# Right now the graph can be loaded with tf.import_graph_def OR the variables can be populated with Restore, but not both (yet).
 	# The graph.pbtxt holds graph structure (in model folder).  model-checkpoint has values/weights.
 	# TODO: Review when bug is fixed. (2015/11/29)
-	if os.path.isfile("checkpoint.model"):
-		saver.restore(sess, "checkpoint.model")
+	if os.path.isfile("./model/checkpoint.model"):
+		print("Restored model state.")
+		saver.restore(sess, "./model/checkpoint.model")
 
 	# Begin training
 	for optimizer in optimizers:
@@ -265,15 +266,16 @@ with tf.Session() as sess:
 			if iteration % TRAINING_REPORT_INTERVAL == 0:
 				# Checkpoint progress
 				print("Finished batch {}".format(iteration))
-				saver.save(sess, "checkpoint.model", global_step=iteration)
+				saver.save(sess, "./model/checkpoint.model", global_step=iteration)
 
 				# Render output sample
-				encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
-				#np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])
-
+				#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
+				encoded = sess.run(encoder, feed_dict={input_batch:x_batch})
+				decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
 				
 				#img_tensor = tf.image.encode_jpeg(decoded[0])
-				img_arr = np.asarray(decoded[0], dtype=np.uint8)
+				decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
+				img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
 				img = Image.fromarray(img_arr)
 				img.save("test{}.jpg".format(iteration))
 				#img = Image.open(BytesIO(result2.content))
