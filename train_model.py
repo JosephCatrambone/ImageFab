@@ -100,8 +100,8 @@ class ConvolutionalAutoencoder(object):
 		be = tf.Variable(tf.random_normal([filter_shape[-1],]))
 		conv = tf.nn.conv2d(input_to_encode, filter=we, strides=strides, padding='SAME') + be
 		act1 = tf.nn.relu(conv)
-		#pool = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME')
-		#norm = tf.nn.lrn(pool, 5, bias=1.0, alpha=0.001, beta=0.75)
+		#pool = tf.nn.max_pool(act1, ksize=[1, filter_shape[1], filter_shape[2], 1], strides=[1, filter_shape[1], filter_shape[2], 1], padding='SAME')
+		#norm = tf.nn.lrn(pool, strides[1], bias=1.0, alpha=0.001, beta=0.75)
 
 		self.encoder_operations.append(act1)
 		self.encoder_weights.append(we)
@@ -124,6 +124,30 @@ class ConvolutionalAutoencoder(object):
 		# Autoencode phase
 		autoenc = tf.nn.deconv2d(signal_from_encoder, filter=wd, strides=strides, padding='SAME', output_shape=input_size) + bd
 		self.pretrainer_operations.append(autoenc)
+
+	def add_pool(self, kernel_size, strides=None):
+		input_shape = self._last_encoder.get_shape().as_list()
+
+		if strides is None:
+			strides = kernel_size
+
+		self._add_pool_encoder(self._last_encoder, kernel_size, strides)
+		encoder_reference = self.encoder_operations[-1]
+		self._last_encoder = encoder_reference
+
+		def decoder_builder(signal_to_decode):
+			self._add_pool_decoder(encoder_reference, signal_to_decode, input_shape, kernel_size, strides)
+		self.build_queue.append(decoder_builder)
+
+	def _add_pool_encoder(self, input_to_encode, kernel_shape, strides):
+		pool = tf.nn.max_pool(input_to_encode, ksize=kernel_shape, strides=strides, padding='SAME')
+
+		self.encoder_operations.append(pool)
+		self.encoder_weights.append(None)
+		self.encoder_biases.append(None)
+
+	def _add_pool_decoder(self, signal_from_encoder, input_to_decode, input_shape, kernel_shape, strides):
+		self._add_conv_decoder(signal_from_encoder, input_to_decode, input_shape, kernel_shape, strides)
 
 	def add_flatten(self):
 		input_shape = self._last_encoder.get_shape().as_list()
@@ -225,11 +249,12 @@ with tf.Session() as sess:
 	generator = gather_batch(sys.argv[1], BATCH_SIZE)
 
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(5, 5, 3, 128)
-	autoencoder.add_conv2d(5, 5, 128, 32)
-	autoencoder.add_conv2d(10, 10, 32, 1, strides=[1, 5, 5, 1])
-	autoencoder.add_conv2d(10, 10, 1, 1, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(3, 3, 3, 512)
+	#autoencoder.add_pool([1, 3, 3, 1], strides=[])
+	autoencoder.add_conv2d(5, 5, 512, 256, strides=[1, 3, 3, 1])
+	autoencoder.add_conv2d(10, 10, 256, 512, strides=[1, 5, 5, 1])
 	autoencoder.add_flatten()
+	autoencoder.add_fc(1024)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
@@ -271,15 +296,14 @@ with tf.Session() as sess:
 				# Render output sample
 				#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
 				encoded = sess.run(encoder, feed_dict={input_batch:x_batch})
-				decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				
+
+				# Randomly generated sample
+				#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+				decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.uniform(low=encoded.min(), high=encoded.max(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
 				#img_tensor = tf.image.encode_jpeg(decoded[0])
 				decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
 				img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
 				img = Image.fromarray(img_arr)
 				img.save("test{}.jpg".format(iteration))
-				#img = Image.open(BytesIO(result2.content))
-				#print("Iteration {}: L1 {}  L2 {}".format(iteration, l1_score, l2_score))
-				#fout = open("example.jpg", 'wb')
-				#tf.image.encode_jpg(
 
+				# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
