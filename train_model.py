@@ -16,10 +16,9 @@ REPRESENTATION_SIZE = 64
 BATCH_SIZE = 1
 IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
-IMAGE_DEPTH = 3
+IMAGE_DEPTH = 1
 
 # Create model
-
 class ConvolutionalAutoencoder(object):
 	def __init__(self, to_encode, to_decode):
 		self.to_encode = to_encode
@@ -44,6 +43,7 @@ class ConvolutionalAutoencoder(object):
 		self.build_queue = list() 
 
 	def add_fc(self, hidden_size):
+		print("FC {}".format(hidden_size))
 		visible_size = self._last_encoder.get_shape().as_list()[-1]
 		self._add_fc_encoder(self._last_encoder, visible_size, hidden_size)
 		self._last_encoder = self.encoder_operations[-1]
@@ -54,6 +54,7 @@ class ConvolutionalAutoencoder(object):
 		self.build_queue.append(anon)
 
 	def _add_fc_encoder(self, input_to_encode, visible_size, hidden_size):
+		print("FC ENC {}".format(hidden_size))
 		# Encode is straightforward.  Data always comes in the same way.
 		we = tf.Variable(tf.random_normal([visible_size, hidden_size]))
 		be = tf.Variable(tf.random_normal([hidden_size,]))
@@ -65,6 +66,7 @@ class ConvolutionalAutoencoder(object):
 		self.encoder_biases.append(be)
 
 	def _add_fc_decoder(self, signal_from_encoder, input_to_decode, visible_size, hidden_size):
+		print("FC DEC {}".format(hidden_size))
 		# Decode requires two steps.  First, decoder path.
 		wd = tf.Variable(tf.random_normal([hidden_size, visible_size]))
 		bd = tf.Variable(tf.random_normal([visible_size, ]))
@@ -81,8 +83,9 @@ class ConvolutionalAutoencoder(object):
 		self.pretrainer_operations.append(act3)
 
 	def add_conv2d(self, filter_height, filter_width, filter_depth, num_filters, strides=None):
+		print("CONV {}, {}, {}, {}".format(filter_height, filter_width, filter_depth, num_filters))
 		if not strides:
-			strides = [1, 1, 1, 1]
+			strides = [1, filter_height, filter_width, 1]
 		input_size = self._last_encoder.get_shape().as_list()
 		filter_shape = [filter_height, filter_width, filter_depth, num_filters]
 
@@ -95,6 +98,7 @@ class ConvolutionalAutoencoder(object):
 		self.build_queue.append(anon)
 
 	def _add_conv_encoder(self, input_to_encode, filter_shape, strides):
+		print("CONV ENC {}, {}, {}, {}".format(*filter_shape))
 		# Encode phase
 		we = tf.Variable(tf.random_normal(filter_shape))
 		be = tf.Variable(tf.random_normal([filter_shape[-1],]))
@@ -108,6 +112,7 @@ class ConvolutionalAutoencoder(object):
 		self.encoder_biases.append(be)
 
 	def _add_conv_decoder(self, signal_from_encoder, input_to_decode, input_size, filter_size, strides):
+		print("CONV DEC {}, {}".format(input_size, filter_size))
 		# Decode phase
 		dec_shape = signal_from_encoder.get_shape().as_list()
 
@@ -125,21 +130,23 @@ class ConvolutionalAutoencoder(object):
 		autoenc = tf.nn.deconv2d(signal_from_encoder, filter=wd, strides=strides, padding='SAME', output_shape=input_size) + bd
 		self.pretrainer_operations.append(autoenc)
 
-	def add_pool(self, kernel_size, strides=None):
+	def add_pool(self, batch_size, kernel_height, kernel_width, kernel_depth, strides=None):
+		print("POOL {}, {}, {}, {}".format(batch_size, kernel_height, kernel_width, kernel_depth))
 		input_shape = self._last_encoder.get_shape().as_list()
 
 		if strides is None:
-			strides = kernel_size
+			strides = [1, kernel_height, kernel_width, 1]
 
-		self._add_pool_encoder(self._last_encoder, kernel_size, strides)
+		self._add_pool_encoder(self._last_encoder, [batch_size, kernel_height, kernel_width, kernel_depth], strides)
 		encoder_reference = self.encoder_operations[-1]
 		self._last_encoder = encoder_reference
 
 		def decoder_builder(signal_to_decode):
-			self._add_pool_decoder(encoder_reference, signal_to_decode, input_shape, kernel_size, strides)
+			self._add_pool_decoder(encoder_reference, signal_to_decode, input_shape, [kernel_height, kernel_width, kernel_depth, 1], strides)
 		self.build_queue.append(decoder_builder)
 
 	def _add_pool_encoder(self, input_to_encode, kernel_shape, strides):
+		print("POOL ENC {}".format(kernel_shape))
 		pool = tf.nn.max_pool(input_to_encode, ksize=kernel_shape, strides=strides, padding='SAME')
 
 		self.encoder_operations.append(pool)
@@ -147,6 +154,7 @@ class ConvolutionalAutoencoder(object):
 		self.encoder_biases.append(None)
 
 	def _add_pool_decoder(self, signal_from_encoder, input_to_decode, input_shape, kernel_shape, strides):
+		print("POOL DEC {} {}".format(input_shape, kernel_shape))
 		self._add_conv_decoder(signal_from_encoder, input_to_decode, input_shape, kernel_shape, strides)
 
 	def add_flatten(self):
@@ -234,7 +242,7 @@ def gather_batch(file_glob, batch_size):
 		while num_samples < batch_size:
 			try:
 				filename = choice(filenames)
-				img = Image.open(filename)
+				img = Image.open(filename).convert('L')
 				print("Loaded image {}".format(filename))
 				batch[num_samples,:,:,:] = np.asarray(img, dtype=np.float)/255.0
 				num_samples += 1
@@ -249,12 +257,16 @@ with tf.Session() as sess:
 	generator = gather_batch(sys.argv[1], BATCH_SIZE)
 
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(3, 3, 3, 512)
-	#autoencoder.add_pool([1, 3, 3, 1], strides=[])
-	autoencoder.add_conv2d(5, 5, 512, 256, strides=[1, 3, 3, 1])
-	autoencoder.add_conv2d(10, 10, 256, 512, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(3, 3, 1, 64, strides=[1, 1, 1, 1])
+	autoencoder.add_pool(1, 1, 1, 64, strides=[1, 1, 1, 64])
+	autoencoder.add_conv2d(5, 5, 1, 128, strides=[1, 1, 1, 1])
+	autoencoder.add_pool(1, 1, 1, 128, strides=[1, 1, 1, 128])
+	autoencoder.add_conv2d(5, 5, 1, 256, strides=[1, 1, 1, 1])
+	autoencoder.add_conv2d(5, 5, 256, 512, strides=[1, 3, 3, 1])
 	autoencoder.add_flatten()
-	autoencoder.add_fc(1024)
+	autoencoder.add_fc(128)
+	autoencoder.add_fc(64)
+	autoencoder.add_fc(32)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
