@@ -16,7 +16,7 @@ REPRESENTATION_SIZE = 64
 BATCH_SIZE = 1
 IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
-IMAGE_DEPTH = 1
+IMAGE_DEPTH = 3
 
 # Create model
 class ConvolutionalAutoencoder(object):
@@ -43,7 +43,6 @@ class ConvolutionalAutoencoder(object):
 		self.build_queue = list() 
 
 	def add_fc(self, hidden_size):
-		print("FC {}".format(hidden_size))
 		visible_size = self._last_encoder.get_shape().as_list()[-1]
 		self._add_fc_encoder(self._last_encoder, visible_size, hidden_size)
 		self._last_encoder = self.encoder_operations[-1]
@@ -83,7 +82,6 @@ class ConvolutionalAutoencoder(object):
 		self.pretrainer_operations.append(act3)
 
 	def add_conv2d(self, filter_height, filter_width, filter_depth, num_filters, strides=None):
-		print("CONV {}, {}, {}, {}".format(filter_height, filter_width, filter_depth, num_filters))
 		if not strides:
 			strides = [1, filter_height, filter_width, 1]
 		input_size = self._last_encoder.get_shape().as_list()
@@ -131,7 +129,6 @@ class ConvolutionalAutoencoder(object):
 		self.pretrainer_operations.append(autoenc)
 
 	def add_pool(self, batch_size, kernel_height, kernel_width, kernel_depth, strides=None):
-		print("POOL {}, {}, {}, {}".format(batch_size, kernel_height, kernel_width, kernel_depth))
 		input_shape = self._last_encoder.get_shape().as_list()
 
 		if strides is None:
@@ -142,7 +139,7 @@ class ConvolutionalAutoencoder(object):
 		self._last_encoder = encoder_reference
 
 		def decoder_builder(signal_to_decode):
-			self._add_pool_decoder(encoder_reference, signal_to_decode, input_shape, [kernel_height, kernel_width, kernel_depth, 1], strides)
+			self._add_pool_decoder(encoder_reference, signal_to_decode, input_shape, [kernel_height, kernel_width, kernel_depth, input_shape[-1]], strides)
 		self.build_queue.append(decoder_builder)
 
 	def _add_pool_encoder(self, input_to_encode, kernel_shape, strides):
@@ -242,7 +239,7 @@ def gather_batch(file_glob, batch_size):
 		while num_samples < batch_size:
 			try:
 				filename = choice(filenames)
-				img = Image.open(filename).convert('L')
+				img = Image.open(filename)
 				print("Loaded image {}".format(filename))
 				batch[num_samples,:,:,:] = np.asarray(img, dtype=np.float)/255.0
 				num_samples += 1
@@ -257,15 +254,13 @@ with tf.Session() as sess:
 	generator = gather_batch(sys.argv[1], BATCH_SIZE)
 
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(3, 3, 1, 64, strides=[1, 1, 1, 1])
-	autoencoder.add_pool(1, 1, 1, 64, strides=[1, 1, 1, 64])
-	autoencoder.add_conv2d(5, 5, 1, 128, strides=[1, 1, 1, 1])
-	autoencoder.add_pool(1, 1, 1, 128, strides=[1, 1, 1, 128])
-	autoencoder.add_conv2d(5, 5, 1, 256, strides=[1, 1, 1, 1])
-	autoencoder.add_conv2d(5, 5, 256, 512, strides=[1, 3, 3, 1])
+	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 64, strides=[1, 1, 1, 1])
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	autoencoder.add_conv2d(11, 11, 64, 128, strides=[1, 5, 5, 1])
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
 	autoencoder.add_flatten()
 	autoencoder.add_fc(128)
-	autoencoder.add_fc(64)
 	autoencoder.add_fc(32)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
@@ -296,7 +291,7 @@ with tf.Session() as sess:
 		saver.restore(sess, "./model/checkpoint.model")
 
 	# Begin training
-	for optimizer in optimizers:
+	for level, optimizer in enumerate(optimizers):
 		for iteration in range(TRAINING_ITERATIONS):
 			x_batch = generator.next()
 			sess.run(optimizer, feed_dict={input_batch:x_batch})
@@ -316,6 +311,6 @@ with tf.Session() as sess:
 				decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
 				img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
 				img = Image.fromarray(img_arr)
-				img.save("test{}.jpg".format(iteration))
+				img.save("test_{}_{}.jpg".format(level, iteration))
 
 				# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
