@@ -19,6 +19,40 @@ IMAGE_HEIGHT = 256
 IMAGE_DEPTH = 3
 
 # Create model
+def build_encoder(stream_to_encode, representation_size):
+	"""Given the two streams, returns an encoder output and a decoder output."""
+	w0 = tf.Variable(tf.random_normal([5, 5, IMAGE_DEPTH, 128])
+	b0 = tf.Variable(tf.random_normal([128,])
+	conv0 = tf.nn.conv2d(stream_to_encode, filter=w0, strides=[1, 5, 5, 1], padding='SAME') + b0
+	act0 = tf.nn.relu(conv0)
+	pool0 = tf.nn.max_pool(act0, ksize=[1, 1, 1, 128], strides=[1, 1, 1, 128] # Squash depth, 1x1x128 -> 1x1x1
+
+	w1 = tf.Variable(tf.random_normal([5, 5, 128, 64])
+	b1 = tf.Variable(tf.random_normal([64,])
+	conv1 = tf.nn.conv2d(pool0, filter=w1, strides=[1, 1, 1, 1], padding='SAME') + b1
+	act1 = tf.nn.relu(conv1)
+	pool1 = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1]) # Squash horizontally, leaving 1x1x64 per 5x5x128 chunk.
+
+	flat2 = tf.reshape(pool1, [BATCH_SIZE, -1])
+	
+	w3 = tf.Variable(tf.random_normal([flat2.get_shape().as_list()[-1], 512]))
+	b3 = tf.Variable(tf.random_normal([512,])
+	mmul3 = tf.matmul(flat2, w3) + b3
+	act3 = tf.nn.relu(mmul3)
+
+	w4 = tf.Variable(tf.random_normal([512, representation_size])
+	b4 = tf.Variable(tf.random_normal([representation_size,]))
+	mmul4 = tf.matmul(act3, w4) + b4
+	act4 = tf.nn.relu(mmul4)
+
+	return act4
+
+def build_decoder(stream_to_decode, representation_size, batch_size, output_height, output_width, output_depth):
+	w0 = tf.Variable(tf.random_normal([representation_size, 1024]))
+	b0 = tf.Variable(tf.random_normal([1024,])
+	mmul0 = tf.matmul(stream_to_decode, w0) + b0
+	act0 = tf.nn.relu(mmul4)
+
 class ConvolutionalAutoencoder(object):
 	def __init__(self, to_encode, to_decode):
 		self.to_encode = to_encode
@@ -164,6 +198,191 @@ class ConvolutionalAutoencoder(object):
 		def anon(signal_to_decode):
 			self._add_flatten_decoder(encoder_ref, signal_to_decode, *input_shape)
 		self.build_queue.append(anon)
+
+	def _add_flatten_encoder(self, to_encode, batch_size, input_height, input_width, input_depth):
+		# Encode
+		flatten = tf.reshape(to_encode, [-1, input_height*input_width*input_depth])
+
+		self.encoder_operations.append(flatten)
+		self.encoder_weights.append(None)
+		self.encoder_biases.append(None)
+
+	def _add_flatten_decoder(self, signal_from_encoder, input_to_decode, batch_size, input_height, input_width, input_depth):
+		# Decode
+		unflatten = tf.reshape(input_to_decode, [-1, input_height, input_width, input_depth])
+
+		self.decoder_operations.append(unflatten)
+		self.decoder_weights.append(None)
+		self.decoder_biases.append(None)
+
+		# Not strictly necessary, but...
+		autoenc = tf.reshape(signal_from_encoder, [-1, input_height, input_width, input_depth])
+		self.pretrainer_operations.append(autoenc)
+
+	def get_layer_count(self):
+		return len(self.encoder_operations)
+
+	def get_output_shape(self):
+		return self.encoder_operations[-1].get_shape()
+
+	def get_encoder_output(self, layer=-1):
+		return self.encoder_operations[layer]
+
+	def get_decoder_output(self, layer=0):
+		# NOTE: This corresponds to the output of encoder [layer], so if we decode in order from the top,
+		# we'll have to run it through decoder_operations in reverse.
+		# When being build, it is in the 'correct' order for reconstruction, but we flip it after build
+		# to make it match up (since the graph is in the right order anyway).
+		return self.decoder_operations[layer]
+
+	def get_pretrainer_output(self, layer):
+		# Similar to get decoder_output, but uses a short-circuited path, rather than the top-most decoder stream.
+		return self.pretrainer_operations[layer]
+
+	def finalize(self):
+		last_decoder = self.to_decode
+		for op in reversed(self.build_queue):
+			op(last_decoder)
+			last_decoder = self.decoder_operations[-1]
+
+		# We appended things from the top-leve to the bottom, so decoder[n] corresponds to encoder[0].
+		# Flip all the fields so they match.  
+		self.decoder_operations.reverse()
+		self.decoder_weights.reverse()
+		self.decoder_biases.reverse()
+		self.pretrainer_operations.reverse()
+
+		self.build_queue = None
+		self._last_encoder = None
+		del self.build_queue
+		del self._last_encoder
+
+# Define objects
+input_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
+encoded_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, REPRESENTATION_SIZE]) # Replace BATCH_SIZE with None
+keep_prob = tf.placeholder(tf.types.float32)
+autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
+
+# Define data-source iterator
+def gather_batch(file_glob, batch_size):
+	reader = tf.WholeFileReader()
+	filenames = glob(file_glob)
+	while True:
+		batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
+		num_samples = 0
+		while num_samples < batch_size:
+			try:
+				filename = choice(filenames)
+				img = Image.open(filename)
+				print("Loaded image {}".format(filename))
+				batch[num_samples,:,:,:] = np.asarray(img, dtype=np.float)/255.0
+				num_samples += 1
+			except ValueError as e:
+				print("Problem loading image {}: {}".format(filename, e))
+				continue
+		yield batch
+			
+# Run!
+with tf.Session() as sess:
+	# Spin up data iterator.
+	generator = gather_batch(sys.argv[1], BATCH_SIZE)
+
+	# Populate autoencoder in session and gather pretrainers.
+	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 256, strides=[1, 5, 5, 1])
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	autoencoder.add_conv2d(3, 3, 256, 128, strides=[1, 1, 1, 1])
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	autoencoder.add_conv2d(3, 3, 128, 64, strides=[1, 1, 1, 1])
+	autoencoder.add_flatten()
+	autoencoder.add_fc(128)
+	autoencoder.add_fc(32)
+	autoencoder.add_fc(REPRESENTATION_SIZE)
+	autoencoder.finalize()
+
+	# Get final ops
+	encoder = autoencoder.get_encoder_output()
+	decoder = autoencoder.get_decoder_output()
+	autoenc = autoencoder.get_pretrainer_output(0)
+	l2_cost = tf.reduce_sum(tf.pow(input_batch - autoenc, 2))
+	optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
+
+	# Init variables.
+	saver = tf.train.Saver()
+	sess.run(tf.initialize_all_variables())
+
+	# If we already have a trained network, reload that. The saver doesn't save the graph structure, so we need to build one with identical node names and reload it here.
+	# Right now the graph can be loaded with tf.import_graph_def OR the variables can be populated with Restore, but not both (yet).
+	# The graph.pbtxt holds graph structure (in model folder).  model-checkpoint has values/weights.
+	# TODO: Review when bug is fixed. (2015/11/29)
+	if os.path.isfile("./model/checkpoint.model"):
+		print("Restored model state.")
+		saver.restore(sess, "./model/checkpoint.model")
+
+	# Begin training
+	for iteration in range(TRAINING_ITERATIONS):
+		x_batch = generator.next()
+		sess.run(optimizer, feed_dict={input_batch:x_batch})
+		if iteration % TRAINING_REPORT_INTERVAL == 0:
+			# Checkpoint progress
+			print("Finished batch {}".format(iteration))
+			saver.save(sess, "./model/checkpoint.model", global_step=iteration)
+
+			# Render output sample
+			#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
+			encoded = sess.run(encoder, feed_dict={input_batch:x_batch})
+
+			# Randomly generated sample
+			#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+			decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.uniform(low=encoded.min(), high=encoded.max(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+			#img_tensor = tf.image.encode_jpeg(decoded[0])
+			decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
+			img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
+			img = Image.fromarray(img_arr)
+			img.save("test_{}.jpg".format(iteration))
+
+			# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
+	unflat1 = tf.reshape(act0, [-1, 
+
+
+	def add_fc(self, hidden_size):
+		visible_size = self._last_encoder.get_shape().as_list()[-1]
+		self._add_fc_encoder(self._last_encoder, visible_size, hidden_size)
+		self._last_encoder = self.encoder_operations[-1]
+
+		encoder = self.encoder_operations[-1]
+		def anon(stream_signal):
+			self._add_fc_decoder(encoder, stream_signal, visible_size, hidden_size)
+		self.build_queue.append(anon)
+
+	def _add_fc_encoder(self, input_to_encode, visible_size, hidden_size):
+		print("FC ENC {}".format(hidden_size))
+		# Encode is straightforward.  Data always comes in the same way.
+		we = tf.Variable(tf.random_normal([visible_size, hidden_size]))
+		be = tf.Variable(tf.random_normal([hidden_size,]))
+		fc1 = tf.matmul(input_to_encode, we) + be
+		act1 = tf.nn.relu(fc1)
+
+		self.encoder_operations.append(act1)
+		self.encoder_weights.append(we)
+		self.encoder_biases.append(be)
+
+	def _add_fc_decoder(self, signal_from_encoder, input_to_decode, visible_size, hidden_size):
+		print("FC DEC {}".format(hidden_size))
+		# Decode requires two steps.  First, decoder path.
+		wd = tf.Variable(tf.random_normal([hidden_size, visible_size]))
+		bd = tf.Variable(tf.random_normal([visible_size, ]))
+		fc2 = tf.matmul(input_to_decode, wd) + bd
+		act2 = tf.nn.relu(fc2)
+
+		self.decoder_operations.append(act2)
+		self.decoder_weights.append(wd)
+		self.decoder_biases.append(bd)
+
+		# Second, autoencoder path.
+		fc3 = tf.matmul(signal_from_encoder, wd) + bd
+		act3 = tf.nn.relu(fc3)
+		self.pretrainer_operations.append(act3)
+
 
 	def _add_flatten_encoder(self, to_encode, batch_size, input_height, input_width, input_depth):
 		# Encode
