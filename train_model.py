@@ -8,11 +8,11 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 
-LEARNING_RATE = 0.01
-TRAINING_ITERATIONS = 10000
+LEARNING_RATE = 0.1
+TRAINING_ITERATIONS = 100000
 TRAINING_DROPOUT_RATE = 0.8
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 64
+REPRESENTATION_SIZE = 128
 BATCH_SIZE = 1
 IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
@@ -254,29 +254,23 @@ with tf.Session() as sess:
 	generator = gather_batch(sys.argv[1], BATCH_SIZE)
 
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 64, strides=[1, 1, 1, 1])
+	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 256, strides=[1, 5, 5, 1])
 	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	autoencoder.add_conv2d(11, 11, 64, 128, strides=[1, 5, 5, 1])
+	autoencoder.add_conv2d(3, 3, 256, 128, strides=[1, 1, 1, 1])
 	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
+	autoencoder.add_conv2d(3, 3, 128, 64, strides=[1, 1, 1, 1])
 	autoencoder.add_flatten()
 	autoencoder.add_fc(128)
 	autoencoder.add_fc(32)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
-	# Collect trainers.
-	optimizers = list()
-	for layer in range(autoencoder.get_layer_count()-1):
-		enc = autoencoder.get_encoder_output(layer)
-		dec = autoencoder.get_pretrainer_output(layer)
-		l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
-		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
-		optimizers.append(optimizer)
-
 	# Get final ops
 	encoder = autoencoder.get_encoder_output()
 	decoder = autoencoder.get_decoder_output()
+	autoenc = autoencoder.get_pretrainer_output(0)
+	l2_cost = tf.reduce_sum(tf.pow(input_batch - autoenc, 2))
+	optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
 
 	# Init variables.
 	saver = tf.train.Saver()
@@ -291,26 +285,25 @@ with tf.Session() as sess:
 		saver.restore(sess, "./model/checkpoint.model")
 
 	# Begin training
-	for level, optimizer in enumerate(optimizers):
-		for iteration in range(TRAINING_ITERATIONS):
-			x_batch = generator.next()
-			sess.run(optimizer, feed_dict={input_batch:x_batch})
-			if iteration % TRAINING_REPORT_INTERVAL == 0:
-				# Checkpoint progress
-				print("Finished batch {}".format(iteration))
-				saver.save(sess, "./model/checkpoint.model", global_step=iteration)
+	for iteration in range(TRAINING_ITERATIONS):
+		x_batch = generator.next()
+		sess.run(optimizer, feed_dict={input_batch:x_batch})
+		if iteration % TRAINING_REPORT_INTERVAL == 0:
+			# Checkpoint progress
+			print("Finished batch {}".format(iteration))
+			saver.save(sess, "./model/checkpoint.model", global_step=iteration)
 
-				# Render output sample
-				#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
-				encoded = sess.run(encoder, feed_dict={input_batch:x_batch})
+			# Render output sample
+			#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
+			encoded = sess.run(encoder, feed_dict={input_batch:x_batch})
 
-				# Randomly generated sample
-				#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.uniform(low=encoded.min(), high=encoded.max(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				#img_tensor = tf.image.encode_jpeg(decoded[0])
-				decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
-				img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
-				img = Image.fromarray(img_arr)
-				img.save("test_{}_{}.jpg".format(level, iteration))
+			# Randomly generated sample
+			#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+			decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.uniform(low=encoded.min(), high=encoded.max(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+			#img_tensor = tf.image.encode_jpeg(decoded[0])
+			decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
+			img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
+			img = Image.fromarray(img_arr)
+			img.save("test_{}.jpg".format(iteration))
 
-				# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
+			# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
