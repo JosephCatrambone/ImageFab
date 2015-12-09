@@ -25,19 +25,20 @@ def build_encoder(stream_to_encode, stream_to_decode):
 	b0 = tf.Variable(tf.random_normal([128,]))
 	conv0 = tf.nn.conv2d(stream_to_encode, filter=w0, strides=[1, 5, 5, 1], padding='SAME') + b0
 	act0 = tf.nn.relu(conv0)
-	pool0 = tf.nn.max_pool(act0, ksize=[1, 1, 1, 128], strides=[1, 1, 1, 128], padding='SAME') # Squash depth, 1x1x128 -> 1x1x1
+	# Max pooling along depth not yet supported.  :(
+	#pool0 = tf.nn.max_pool(act0, ksize=[1, 1, 1, 128], strides=[1, 1, 1, 128], padding='SAME') # Squash depth, 1x1x128 -> 1x1x1
 
 	w1 = tf.Variable(tf.random_normal([5, 5, 128, 64]))
 	b1 = tf.Variable(tf.random_normal([64,]))
-	conv1 = tf.nn.conv2d(pool0, filter=w1, strides=[1, 1, 1, 1], padding='SAME') + b1
+	conv1 = tf.nn.conv2d(act0, filter=w1, strides=[1, 1, 1, 1], padding='SAME') + b1
 	act1 = tf.nn.relu(conv1)
-	pool1 = tf.nn.max_pool(act1, ksize=[1, 1, 1, 64], strides=[1, 1, 1, 64]) # Squash horizontally, leaving 1x1x64 per 5x5x128 chunk.
+	#pool1 = tf.nn.max_pool(act1, ksize=[1, 1, 1, 64], strides=[1, 1, 1, 64], padding='SAME') # Squash horizontally, leaving 1x1x64 per 5x5x128 chunk.
 
-	flat2 = tf.reshape(pool1, [BATCH_SIZE, -1])
+	flat = tf.reshape(act1, [BATCH_SIZE, -1])
 	
-	w3 = tf.Variable(tf.random_normal([flat2.get_shape().as_list()[-1], 512]))
+	w3 = tf.Variable(tf.random_normal([flat.get_shape().as_list()[-1], 512]))
 	b3 = tf.Variable(tf.random_normal([512,]))
-	mmul3 = tf.matmul(flat2, w3) + b3
+	mmul3 = tf.matmul(flat, w3) + b3
 	act3 = tf.nn.relu(mmul3)
 
 	w4 = tf.Variable(tf.random_normal([512, REPRESENTATION_SIZE]))
@@ -54,26 +55,26 @@ def build_encoder(stream_to_encode, stream_to_decode):
 	mmul5_ae = tf.matmul(encoder, w5) + b5
 	act5_ae = tf.nn.relu(mmul5_ae)
 
-	w6 = tf.Variable(tf.random_normal([512, flat2.get_shape().as_list()[-1]]))
-	b6 = tf.Variable(tf.random_normal([flat2.get_shape().as_list()[-1],]))
+	w6 = tf.Variable(tf.random_normal([512, flat.get_shape().as_list()[-1]]))
+	b6 = tf.Variable(tf.random_normal([flat.get_shape().as_list()[-1],]))
 	mmul6_dec = tf.matmul(act5_dec, w6) + b6
 	act6_dec = tf.nn.relu(mmul6_dec)
 	mmul6_ae = tf.matmul(act5_ae, w6) + b6
 	act6_ae = tf.matmul(act5_ae, w6)
 
-	unflat_dec = tf.reshape(act6_dec, pool1.get_shape().as_list())
-	unflat_ae = tf.reshape(act6_ae, pool1.get_shape().as_list())
+	unflat_dec = tf.reshape(act6_dec, act1.get_shape().as_list())
+	unflat_ae = tf.reshape(act6_ae, act1.get_shape().as_list())
 
 	w7 = tf.Variable(tf.random_normal([5, 5, 128, 64]))
 	b7 = tf.Variable(tf.random_normal(act0.get_shape().as_list()[1:]))
-	deconv8_dec = tf.nn.conv2d(unflat_dec, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=act0.get_shape().as_list()) + b7
+	deconv8_dec = tf.nn.deconv2d(unflat_dec, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=act0.get_shape().as_list()) + b7
 	act8_dec = tf.nn.relu(deconv8_dec)
-	deconv8_ae = tf.nn.conv2d(unflat_ae, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=act0.get_shape().as_list()) + b7
+	deconv8_ae = tf.nn.deconv2d(unflat_ae, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=act0.get_shape().as_list()) + b7
 	act8_ae = tf.nn.relu(deconv8_ae)
 
 	w8 = tf.Variable(tf.random_normal([5, 5, IMAGE_DEPTH, 128]))
-	deconv9_dec = tf.nn.deconv2d(act8_dec, filter=w8, strides=[1, 5, 5, 1], padding='SAME', output_shape=stream_to_encode.get_shape().as_list)
-	deconv9_ae = tf.nn.deconv2d(act8_ae, filter=w8, strides=[1, 5, 5, 1], padding='SAME', output_shape=stream_to_encode.get_shape().as_list)
+	deconv9_dec = tf.nn.deconv2d(act8_dec, filter=w8, strides=[1, 5, 5, 1], padding='SAME', output_shape=stream_to_encode.get_shape().as_list())
+	deconv9_ae = tf.nn.deconv2d(act8_ae, filter=w8, strides=[1, 5, 5, 1], padding='SAME', output_shape=stream_to_encode.get_shape().as_list())
 
 	return encoder, deconv9_dec, deconv9_ae
 
