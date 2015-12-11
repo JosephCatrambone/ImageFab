@@ -12,11 +12,11 @@ LEARNING_RATE = 0.1
 TRAINING_ITERATIONS = 100000
 TRAINING_DROPOUT_RATE = 0.8
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 128
+REPRESENTATION_SIZE = 64
 BATCH_SIZE = 1
 IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
-IMAGE_DEPTH = 3
+IMAGE_DEPTH = 1
 
 # Create model
 def build_encoder(stream_to_encode, stream_to_decode):
@@ -94,8 +94,51 @@ def gather_batch(file_glob, batch_size):
 			try:
 				filename = choice(filenames)
 				img = Image.open(filename)
+				target_width = IMAGE_WIDTH
+				target_height = IMAGE_HEIGHT
+
+				if IMAGE_DEPTH == 1:
+					img = img.convert('L')
+				elif IMAGE_DEPTH == 3:
+					img = img.convert('RGB')
+				else:
+					raise Exception("Invalid depth argument for batch: {}".format(IMAGE_DEPTH))
+
+				pad_min = True # Shrink down the image, then pad the smaller dimension with black.
+				w = float(img.size[0])
+				h = float(img.size[1])
+				newimg = None
+				if pad_min: # Pad the outside of the image.
+					# Calculate new size
+					max_res = max(w, h)
+					new_width = int(target_width*float(w/max_res))
+					new_height = int(target_height*float(h/max_res))
+					# Center image in new image.
+					newimg = Image.new(img.mode, (target_width, target_height))
+					offset_x = (target_width//2)-(new_width//2)
+					offset_y = (target_height//2)-(new_height//2)
+					box = (offset_x, offset_y, offset_x+new_width, offset_y+new_height)
+					newimg.paste(img.resize((new_width, new_height)), box)
+				else: # Cut a section from the middle of the image.
+					# Calculate size
+					res_cap = min(w, h)
+					new_width = int(target_width*(w/float(res_cap)))
+					new_height = int(target_height*(h/float(res_cap)))
+					# Cut image chunk.
+					offset_x = (new_width//2)-(target_width//2)
+					offset_y = (new_height//2)-(target_height//2)
+					newimg = img.resize(
+						(new_width, new_height)
+					).crop(
+						(offset_x, offset_y, offset_x+target_width, offset_y+target_height)
+					)
+
 				print("Loaded image {}".format(filename))
-				batch[num_samples,:,:,:] = np.asarray(img, dtype=np.float)/255.0
+				# Another shim.  Depth == 3 has to be handled like this:
+				if IMAGE_DEPTH == 3:
+					batch[num_samples,:,:,:] = np.asarray(newimg, dtype=np.float)/255.0
+				else:
+					batch[num_samples,:,:,0] = np.asarray(newimg, dtype=np.float)/255.0
 				num_samples += 1
 			except ValueError as e:
 				print("Problem loading image {}: {}".format(filename, e))
@@ -143,7 +186,10 @@ with tf.Session() as sess:
 			#img_tensor = tf.image.encode_jpeg(decoded[0])
 			decoded_norm = (decoded[0]-decoded.min())/(decoded.max()-decoded.min())
 			img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
-			img = Image.fromarray(img_arr)
+			if IMAGE_DEPTH == 3:
+				img = Image.fromarray(img_arr)
+			else:
+				img = Image.fromarray(img_arr[:,:,0])
 			img.save("test_{}.jpg".format(iteration))
 
 			# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
