@@ -93,12 +93,12 @@ def get_image(img_src, target_width, target_height, crop, pad, file_prefix, targ
 
 def main():
 	while True:
-		url = raw_input("URL: ")
+		url = input("URL: ")
 		if not url:
 			return False;
-		prefix = raw_input("Prefix: ")
-		embedded = (raw_input("Embedded images (y/[n]): ") == 'y')
-		linked = (raw_input("Linked images (y/[n]): ") == 'y')
+		prefix = input("Prefix: ")
+		embedded = (input("Embedded images (y/[n]): ") == 'y')
+		linked = (input("Linked images (y/[n]): ") == 'y')
 		download_page(url, 256, 256, pad=True, encoding="JPEG", image_links=linked, image_embeds=embedded, file_prefix=prefix)
 
 if __name__=="__main__":
