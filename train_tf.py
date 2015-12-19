@@ -19,69 +19,80 @@ IMAGE_HEIGHT = 256
 IMAGE_DEPTH = 1
 
 # Create model
-def build_encoder(stream_to_encode, stream_to_decode):
+def build_encoder(stream_to_encode, representation_size):
 	"""Given the two streams, returns an encoder output and a decoder output."""
-	w0 = tf.Variable(tf.random_normal([5, 5, IMAGE_DEPTH, 128]))
+	w0 = tf.Variable(tf.random_normal([11, 11, IMAGE_DEPTH, 128]))
 	b0 = tf.Variable(tf.random_normal([128,]))
-	conv0 = tf.nn.conv2d(stream_to_encode, filter=w0, strides=[1, 5, 5, 1], padding='SAME') + b0
+	conv0 = tf.nn.conv2d(stream_to_encode, filter=w0, strides=[1, 1, 1, 1], padding='SAME') + b0
 	act0 = tf.nn.relu(conv0)
-	# Max pooling along depth not yet supported.  :(
-	#pool0 = tf.nn.max_pool(act0, ksize=[1, 1, 1, 128], strides=[1, 1, 1, 128], padding='SAME') # Squash depth, 1x1x128 -> 1x1x1
+	pool0 = tf.nn.max_pool(act0, ksize=[1, 11, 11, 1], strides=[1, 5, 5, 1], padding='SAME') # Squash depth, 1x1x128 -> 1x1x1
 
 	w1 = tf.Variable(tf.random_normal([5, 5, 128, 64]))
 	b1 = tf.Variable(tf.random_normal([64,]))
-	conv1 = tf.nn.conv2d(act0, filter=w1, strides=[1, 1, 1, 1], padding='SAME') + b1
+	conv1 = tf.nn.conv2d(pool0, filter=w1, strides=[1, 1, 1, 1], padding='SAME') + b1
 	act1 = tf.nn.relu(conv1)
-	#pool1 = tf.nn.max_pool(act1, ksize=[1, 1, 1, 64], strides=[1, 1, 1, 64], padding='SAME') # Squash horizontally, leaving 1x1x64 per 5x5x128 chunk.
+	pool1 = tf.nn.max_pool(act1, ksize=[1, 5, 5, 1], strides=[1, 5, 5, 1], padding='SAME') # Squash horizontally, leaving 1x1x64 per 5x5x128 chunk.
 
-	flat = tf.reshape(act1, [BATCH_SIZE, -1])
+	flat = tf.reshape(pool1, [BATCH_SIZE, -1])
 	
 	w3 = tf.Variable(tf.random_normal([flat.get_shape().as_list()[-1], 512]))
 	b3 = tf.Variable(tf.random_normal([512,]))
 	mmul3 = tf.matmul(flat, w3) + b3
 	act3 = tf.nn.relu(mmul3)
 
-	w4 = tf.Variable(tf.random_normal([512, REPRESENTATION_SIZE]))
-	b4 = tf.Variable(tf.random_normal([REPRESENTATION_SIZE,]))
+	w4 = tf.Variable(tf.random_normal([512, representation_size]))
+	b4 = tf.Variable(tf.random_normal([representation_size,]))
 	mmul4 = tf.matmul(act3, w4) + b4
 	act4 = tf.nn.relu(mmul4)
 
 	encoder = tf.identity(act4, name='encoder_output')
 
-	w5 = tf.Variable(tf.random_normal([REPRESENTATION_SIZE, 512]))
-	b5 = tf.Variable(tf.random_normal([512,]))
-	mmul5_dec = tf.matmul(stream_to_decode, w5) + b5
-	act5_dec = tf.nn.relu(mmul5_dec)
-	mmul5_ae = tf.matmul(encoder, w5) + b5
-	act5_ae = tf.nn.relu(mmul5_ae)
+	return encoder, [w0, w1, w3, w4], [b0, b1, b3, b4]
 
-	w6 = tf.Variable(tf.random_normal([512, flat.get_shape().as_list()[-1]]))
-	b6 = tf.Variable(tf.random_normal([flat.get_shape().as_list()[-1],]))
-	mmul6_dec = tf.matmul(act5_dec, w6) + b6
-	act6_dec = tf.nn.relu(mmul6_dec)
-	mmul6_ae = tf.matmul(act5_ae, w6) + b6
-	act6_ae = tf.matmul(act5_ae, w6)
+def build_decoder(stream_to_decode, output_height, output_width, output_depth, weights=None, biases=None):
+	if weights == None:
+		w5 = tf.Variable(tf.random_normal([stream_to_decode.get_shape().as_list()[-1], 1024]))
+		b5 = tf.Variable(tf.random_normal([1024,]))
+	else:
+		w5 = weights[0]
+		b5 = biases[0]
+	mmul5 = tf.matmul(stream_to_decode, w5) + b5
+	act5 = tf.nn.relu(mmul5)
 
-	unflat_dec = tf.reshape(act6_dec, act1.get_shape().as_list())
-	unflat_ae = tf.reshape(act6_ae, act1.get_shape().as_list())
+	if weights == None:
+		w6 = tf.Variable(tf.random_normal([1024, 4096]))
+		b6 = tf.Variable(tf.random_normal([4096,]))
+	else:
+		w6 = weights[1]
+		b6 = biases[1]
+	mmul6 = tf.matmul(act5, w6) + b6
+	act6 = tf.nn.relu(mmul6)
 
-	w7 = tf.Variable(tf.random_normal([5, 5, 128, 64]))
-	b7 = tf.Variable(tf.random_normal(act0.get_shape().as_list()[1:]))
-	deconv8_dec = tf.nn.deconv2d(unflat_dec, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=act0.get_shape().as_list()) + b7
-	act8_dec = tf.nn.relu(deconv8_dec)
-	deconv8_ae = tf.nn.deconv2d(unflat_ae, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=act0.get_shape().as_list()) + b7
-	act8_ae = tf.nn.relu(deconv8_ae)
+	unflat = tf.reshape(act6, [-1, 32, 32, 4]) # b6 must be divisible by the product of whd.
 
-	w8 = tf.Variable(tf.random_normal([5, 5, IMAGE_DEPTH, 128]))
-	deconv9_dec = tf.nn.deconv2d(act8_dec, filter=w8, strides=[1, 5, 5, 1], padding='SAME', output_shape=stream_to_encode.get_shape().as_list())
-	deconv9_ae = tf.nn.deconv2d(act8_ae, filter=w8, strides=[1, 5, 5, 1], padding='SAME', output_shape=stream_to_encode.get_shape().as_list())
+	if weights == None:
+		w7 = tf.Variable(tf.random_normal([5, 5, 16, 4]))
+		b7 = tf.Variable(tf.random_normal([128, 128, 16]))
+	else:
+		w7 = weights[2]
+		b7 = biases[2]
+	deconv8 = tf.nn.deconv2d(unflat, filter=w7, strides=[1, 1, 1, 1], padding='SAME', output_shape=[1, 128, 128, 16]) + b7
+	act8 = tf.nn.relu(deconv8)
 
-	return encoder, deconv9_dec, deconv9_ae
+	if weights == None:
+		w8 = tf.Variable(tf.random_normal([11, 11, IMAGE_DEPTH, 16]))
+		b8 = tf.Variable(tf.random_normal([output_height, output_width, output_depth]))
+	else:
+		w8 = weights[3]
+		b8 = biases[3]
+	deconv9 = tf.nn.deconv2d(act8, filter=w8, strides=[1, 1, 1, 1], padding='SAME', output_shape=[1, output_height, output_width, output_depth]) + b8
+
+	return deconv9, [w5, w6, w7, w8], [b5, b6, b7, b8]
 
 # Define objects
-input_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
-encoded_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, REPRESENTATION_SIZE]) # Replace BATCH_SIZE with None
-keep_prob = tf.placeholder(tf.types.float32)
+input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
+encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE]) # Replace BATCH_SIZE with None
+keep_prob = tf.placeholder(tf.float32)
 
 # Define data-source iterator
 def gather_batch(file_glob, batch_size):
@@ -133,6 +144,10 @@ def gather_batch(file_glob, batch_size):
 						(offset_x, offset_y, offset_x+target_width, offset_y+target_height)
 					)
 
+				if newimg.size[0] != IMAGE_WDITH or newimg.size[1] != IMAGE_HEIGHT:
+					print("Image smaller than target.  Skipping.")
+					continue
+
 				print("Loaded image {}".format(filename))
 				# Another shim.  Depth == 3 has to be handled like this:
 				if IMAGE_DEPTH == 3:
@@ -151,8 +166,10 @@ with tf.Session() as sess:
 	generator = gather_batch(sys.argv[1], BATCH_SIZE)
 
 	# Get final ops
-	encoder, decoder, autoenc = build_encoder(input_batch, encoded_batch)
-	l2_cost = tf.reduce_sum(tf.pow(input_batch - autoenc, 2))
+	encoder, _, _ = build_encoder(input_batch, REPRESENTATION_SIZE)
+	decoder, dw, db = build_decoder(encoded_batch, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH)
+	autoencoder, _, _ = build_decoder(encoder, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH, weights=dw, biases=db)
+	l2_cost = tf.reduce_sum(tf.abs(input_batch - autoencoder))
 	optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
 
 	# Init variables.
