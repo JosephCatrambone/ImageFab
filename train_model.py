@@ -224,9 +224,9 @@ class ConvolutionalAutoencoder(object):
 		del self._last_encoder
 
 # Define objects
-input_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
-encoded_batch = tf.placeholder(tf.types.float32, [BATCH_SIZE, REPRESENTATION_SIZE]) # Replace BATCH_SIZE with None
-keep_prob = tf.placeholder(tf.types.float32)
+input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH])
+encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE]) # Replace BATCH_SIZE with None
+keep_prob = tf.placeholder(tf.float32)
 autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
 
 # Define data-source iterator
