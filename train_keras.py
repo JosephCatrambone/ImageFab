@@ -60,7 +60,7 @@ graph.add_node(Dense(IMAGE_DEPTH*IMAGE_HEIGHT*IMAGE_WIDTH), name='op22', input='
 graph.add_node(Reshape(SHAPE_ORDERING), name='op23', input='op22')
 
 #graph.add_output(name='encoded_output', input='op18')
-graph.add_output(name='decoded_output', input='op22')
+graph.add_output(name='decoded_output', input='op23')
 
 graph.compile(optimizer='rmsprop', loss={'decoded_output':'msle'})
 
@@ -89,7 +89,7 @@ def loader(file_glob):
 # Run!
 # Spin up data iterator.
 generator = loader(sys.argv[1])
-X_set = np.zeros([10] + list(SHAPE_ORDERING))
+X_set = np.zeros([10] + list(SHAPE_ORDERING), dtype=np.float)
 for i, example in zip(range(10), generator):
 	X_set[i,:,:,:] = example
 graph.fit({'image_input':X_set, 'representation_input':np.zeros((10, REPRESENTATION_SIZE), dtype=np.float), 'decoded_output':X_set}, nb_epoch=10)
