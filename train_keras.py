@@ -11,7 +11,7 @@ from keras import backend as K
 from keras.layers import containers
 from keras.models import Graph, model_from_json
 from keras.layers.core import Dense, Dropout, Activation, Flatten, Reshape
-from keras.layers.convolutional import Convolution2D, MaxPooling2D
+from keras.layers.convolutional import Convolution2D, MaxPooling2D, UpSampling2D
 from keras.optimizers import SGD
 
 MODEL_JSON = "model.json"
@@ -68,11 +68,12 @@ def build_model(image_input_name='image_input', representation_input_name='repre
 	graph.add_node(Dense(REPRESENTATION_SIZE), name='op17', input='op16')
 	graph.add_node(Activation('softmax'), name='op18', input='op17')
 
-	graph.add_node(Dense(512, input_dim=10), name='op19', inputs=['op18', 'representation_input'], merge_mode='ave')
+	graph.add_node(Dense(32, input_dim=10), name='op19', inputs=['op18', 'representation_input'], merge_mode='ave')
 	graph.add_node(Activation('relu'), name='op20', input='op19')
 	graph.add_node(Dropout(0.25), name='op21', input='op20')
 	graph.add_node(Dense(IMAGE_DEPTH*IMAGE_HEIGHT*IMAGE_WIDTH), name='op22', input='op21')
-	graph.add_node(Reshape(SHAPE_ORDERING), name='op23', input='op22')
+	graph.add_node(Reshape((IMAGE_DEPTH, IMAGE_HEIGHT, IMAGE_WIDTH)), name='op23', input='op22')
+	#graph.add_node(Reshape(SHAPE_ORDERING), name='op25', input='op24')
 
 	#graph.add_output(name='encoded_output', input='op18')
 	graph.add_output(name='decoded_output', input='op23')
@@ -98,12 +99,14 @@ def example_generator(file_glob, noise=0.0):
 			# If theano, D, H, W
 			example = np.swapaxes(example, 1, 2)
 			example = np.swapaxes(example, 0, 1)
+			target = example
 			if noise > 0:
-				example += np.random.uniform(low=-noise, high=+noise, shape=example.shape)
+				# Example is the noised copy.
+				example = target + np.random.uniform(low=-noise, high=+noise, size=example.shape)
 		except ValueError as e:
 			print("Problem loading image {}: {}".format(filename, e))
 			continue
-		yield example
+		yield example, target
 			
 # Run!
 if __name__=="__main__":
@@ -113,14 +116,16 @@ if __name__=="__main__":
 	else:
 		print("Model not loaded.  Starting from scratch.")
 		model = build_model()
-	generator = example_generator(sys.argv[1])
+	generator = example_generator(sys.argv[1], noise=0.2)
 	while True:
 		# Fill out a bunch of training examples
-		X_set = np.zeros([BATCH_SIZE] + list(SHAPE_ORDERING), dtype=np.float)
-		for i, example in zip(range(BATCH_SIZE), generator):
-			X_set[i,:,:,:] = example
+		x_set = np.zeros([BATCH_SIZE] + list(SHAPE_ORDERING), dtype=np.float)
+		y_set = np.zeros([BATCH_SIZE] + list(SHAPE_ORDERING), dtype=np.float)
+		for i, pair in zip(range(BATCH_SIZE), generator):
+			x_set[i,:,:,:] = pair[0]
+			y_set[i,:,:,:] = pair[1]
 		# Fit our model
-		model.fit({'image_input':X_set, 'representation_input':np.zeros((BATCH_SIZE, REPRESENTATION_SIZE), dtype=np.float), 'decoded_output':X_set}, nb_epoch=TRAINING_ITERATIONS)
+		model.fit({'image_input':x_set, 'representation_input':np.zeros((BATCH_SIZE, REPRESENTATION_SIZE), dtype=np.float), 'decoded_output':y_set}, nb_epoch=TRAINING_ITERATIONS)
 
 		# Generate an example
 		pred = model.predict({'image_input':np.zeros(([BATCH_SIZE] + list(SHAPE_ORDERING)), dtype=np.float), 'representation_input':np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
