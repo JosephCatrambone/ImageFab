@@ -3,6 +3,7 @@ import sys, os
 from glob import glob
 from random import choice
 from io import BytesIO
+from itertools import cycle
 
 from PIL import Image
 import numpy as np
@@ -12,8 +13,8 @@ LEARNING_RATE = 0.01
 TRAINING_ITERATIONS = 10000
 TRAINING_DROPOUT_RATE = 0.8
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 64
-BATCH_SIZE = 1
+REPRESENTATION_SIZE = 2
+BATCH_SIZE = 10
 IMAGE_WIDTH = 256
 IMAGE_HEIGHT = 256
 IMAGE_DEPTH = 3
@@ -230,29 +231,39 @@ keep_prob = tf.placeholder(tf.float32)
 autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
 
 # Define data-source iterator
-def gather_batch(file_glob, batch_size):
-	reader = tf.WholeFileReader()
+def example_generator(file_glob, noise=0.0):
 	filenames = glob(file_glob)
-	while True:
-		batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
-		num_samples = 0
-		while num_samples < batch_size:
-			try:
-				filename = choice(filenames)
-				img = Image.open(filename)
-				print("Loaded image {}".format(filename))
-				batch[num_samples,:,:,:] = np.asarray(img, dtype=np.float)/255.0
-				num_samples += 1
-			except ValueError as e:
-				print("Problem loading image {}: {}".format(filename, e))
-				continue
-		yield batch
+	for filename in cycle(filenames):
+		example = None
+		try:
+			filename = choice(filenames)
+			img = Image.open(filename)
+			print("Loaded image {}".format(filename))
+			example = np.asarray(img, dtype=np.float)/255.0
+			#example = np.swapaxes(example, 1, 2)
+			target = example
+			if noise > 0:
+				# Example is the noised copy.
+				example = target + np.random.uniform(low=-noise, high=+noise, size=example.shape)
+		except ValueError as e:
+			print("Problem loading image {}: {}".format(filename, e))
+			continue
+		yield example, target
+
+gen = example_generator(sys.argv[1])
+def get_batch(batch_size):
+	batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
+	labels = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
+	for index, data in enumerate(gen):
+		if index >= batch_size:
+			break
+		x, y = data
+		batch[index,:,:,:] = x[:,:,:]
+		labels[index,:,:,:] = y[:,:,:]
+	return batch, labels
 			
 # Run!
 with tf.Session() as sess:
-	# Spin up data iterator.
-	generator = gather_batch(sys.argv[1], BATCH_SIZE)
-
 	# Populate autoencoder in session and gather pretrainers.
 	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 64, strides=[1, 1, 1, 1])
 	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
@@ -260,8 +271,8 @@ with tf.Session() as sess:
 	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
 	autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
 	autoencoder.add_flatten()
-	autoencoder.add_fc(128)
-	autoencoder.add_fc(32)
+	autoencoder.add_fc(16)
+	autoencoder.add_fc(8)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
@@ -293,7 +304,7 @@ with tf.Session() as sess:
 	# Begin training
 	for level, optimizer in enumerate(optimizers):
 		for iteration in range(TRAINING_ITERATIONS):
-			x_batch = generator.next()
+			x_batch, y_batch = get_batch(BATCH_SIZE)
 			sess.run(optimizer, feed_dict={input_batch:x_batch})
 			if iteration % TRAINING_REPORT_INTERVAL == 0:
 				# Checkpoint progress
