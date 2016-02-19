@@ -22,13 +22,13 @@ def download_page(url, target_width, target_height, crop=False, pad=True, file_p
 		for link in soup.find_all('a'):
 			# Pull URL from hyperlink
 			img_src = link.get('href')
-			if img_src is not None and img_src.endswith(target_extension):
+			if img_src is not None: # and img_src.endswith(target_extension):
 				index = get_image(img_src, target_width, target_height, crop, pad, file_prefix, encoding, index)
 				time.sleep(delay)
 	if image_embeds:
 		for link in soup.find_all('img'):
 			img_src = link.get('src')
-			if img_src is not None and img_src.endswith(target_extension):
+			if img_src is not None: # and img_src.endswith(target_extension):
 				index = get_image(img_src, target_width, target_height, crop, pad, file_prefix, encoding, index)
 				time.sleep(delay)
 
@@ -99,7 +99,7 @@ def main():
 		prefix = input("Prefix: ")
 		embedded = (input("Embedded images (y/[n]): ") == 'y')
 		linked = (input("Linked images (y/[n]): ") == 'y')
-		download_page(url, 256, 256, pad=True, encoding="JPEG", image_links=linked, image_embeds=embedded, file_prefix=prefix)
+		download_page(url, 256, 256, pad=False, crop=False, encoding="JPEG", image_links=linked, image_embeds=embedded, file_prefix=prefix)
 
 if __name__=="__main__":
 	main()
