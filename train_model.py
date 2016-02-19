@@ -9,13 +9,13 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 
-LEARNING_RATE = 0.05
+LEARNING_RATE = 0.1
 TRAINING_ITERATIONS = 5000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 32
+REPRESENTATION_SIZE = 1
 BATCH_SIZE = 16
-IMAGE_WIDTH = 256
-IMAGE_HEIGHT = 256
+IMAGE_WIDTH = 64
+IMAGE_HEIGHT = 64
 IMAGE_DEPTH = 3
 
 # Create model
@@ -370,19 +370,19 @@ def get_batch(batch_size):
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
 	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 64, strides=[1, 5, 5, 1], activate=False)
-	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	autoencoder.add_local_response_normalization()
-	autoencoder.add_dropout(keep_prob)
-	autoencoder.add_conv2d(5, 5, 64, 128, strides=[1, 3, 3, 1])
-	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	autoencoder.add_local_response_normalization()
-	autoencoder.add_dropout(keep_prob)
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	#autoencoder.add_local_response_normalization()
+	#autoencoder.add_dropout(keep_prob)
+	#autoencoder.add_conv2d(5, 5, 64, 128, strides=[1, 3, 3, 1])
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	#autoencoder.add_local_response_normalization()
+	#autoencoder.add_dropout(keep_prob)
 	#autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
 	#autoencoder.add_local_response_normalization()
 	#autoencoder.add_dropout(keep_prob)
 	autoencoder.add_flatten()
-	autoencoder.add_fc(128)
-	#autoencoder.add_fc(32)
+	#autoencoder.add_fc(128)
+	autoencoder.add_fc(32)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
@@ -393,8 +393,8 @@ with tf.Session() as sess:
 		dec = autoencoder.get_pretrainer_output(layer)
 		#l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
 		l2_cost = tf.nn.l2_loss(enc - dec)
-		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
-		optimizers.append(optimizer)
+		#optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
+		optimizers.append(None) #optimizer)
 
 	# Get final ops
 	encoder = autoencoder.get_encoder_output()
@@ -413,21 +413,15 @@ with tf.Session() as sess:
 	if os.path.isfile("./model/checkpoint.model"):
 		print("Restored model state.")
 		saver.restore(sess, "./model/checkpoint.model")
-	else:
-		print("Model not loaded.  Starting fresh.")
 
 	# Begin training
 	for level, optimizer in enumerate(optimizers):
 		try:
 			for iteration in range(TRAINING_ITERATIONS):
 				x_batch, y_batch = get_batch(BATCH_SIZE)
-				# Running global optimize allows quick convergence on single-example.
-				# Might want to do both local and global, followed by a long session of global-only.
-				# Local optimizer
-				sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.1, high=0.1, size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				# Global optimizer
-				#loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.1, high=0.1, size=[BATCH_SIZE, REPRESENTATION_SIZE])}) # y_batch is denoised.
-				#print("Iter {}: {}".format(iteration, loss1))
+				#sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.001, high=0.001, size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+				loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.0, high=0.0, size=[BATCH_SIZE, REPRESENTATION_SIZE])}) # y_batch is denoised.
+				print("Iter {}: {}".format(iteration, loss1))
 				if iteration % TRAINING_REPORT_INTERVAL == 0:
 					# Checkpoint progress
 					print("Finished batch {}".format(iteration))
@@ -441,7 +435,7 @@ with tf.Session() as sess:
 					#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
 					decoded = sess.run(decoder, feed_dict={
 						input_batch:np.zeros(shape=[BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH]), 
-						encoded_batch:np.random.uniform(low=-1.0, high=1.0, size=[BATCH_SIZE, REPRESENTATION_SIZE]), 
+						encoded_batch:encoded, 
 						#encoded_batch:encoded+np.random.uniform(low=encoded.min()-0.1, high=encoded.max()+0.1, size=[BATCH_SIZE, REPRESENTATION_SIZE]), 
 						keep_prob:1.0})
 					#img_tensor = tf.image.encode_jpeg(decoded[0])
