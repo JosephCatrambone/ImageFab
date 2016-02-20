@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import sys, os
 from glob import glob
-from random import choice
+from random import choice, randint
 from io import BytesIO
 from itertools import cycle
 
@@ -10,12 +10,12 @@ import numpy as np
 import tensorflow as tf
 
 LEARNING_RATE = 0.1
-TRAINING_ITERATIONS = 5000
+TRAINING_ITERATIONS = 50000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 1
-BATCH_SIZE = 16
-IMAGE_WIDTH = 64
-IMAGE_HEIGHT = 64
+REPRESENTATION_SIZE = 64
+BATCH_SIZE = 10
+IMAGE_WIDTH = 128
+IMAGE_HEIGHT = 128
 IMAGE_DEPTH = 3
 
 # Create model
@@ -59,7 +59,7 @@ class ConvolutionalAutoencoder(object):
 		be = tf.Variable(tf.random_normal([hidden_size,]))
 		fc1 = tf.matmul(input_to_encode, we) + be
 		if activate:
-			act1 = tf.nn.relu(fc1)
+			act1 = tf.nn.relu6(fc1)
 		else:
 			act1 = fc1
 
@@ -74,7 +74,7 @@ class ConvolutionalAutoencoder(object):
 		bd = tf.Variable(tf.random_normal([visible_size, ]))
 		fc2 = tf.matmul(input_to_decode, wd) + bd
 		if activate:
-			act2 = tf.nn.relu(fc2)
+			act2 = tf.nn.relu6(fc2)
 		else:
 			act2 = fc2
 
@@ -85,7 +85,7 @@ class ConvolutionalAutoencoder(object):
 		# Second, autoencoder path.
 		fc3 = tf.matmul(signal_from_encoder, wd) + bd
 		if activate:
-			act3 = tf.nn.relu(fc3)
+			act3 = tf.nn.relu6(fc3)
 		else:
 			act3 = fc3
 		self.pretrainer_operations.append(act3)
@@ -137,7 +137,7 @@ class ConvolutionalAutoencoder(object):
 		be = tf.Variable(tf.random_normal([filter_shape[-1],]))
 		conv = tf.nn.conv2d(input_to_encode, filter=we, strides=strides, padding=padding) + be
 		if activate:
-			act1 = tf.nn.relu(conv)
+			act1 = tf.nn.relu6(conv)
 		else:
 			act1 = conv
 		#pool = tf.nn.max_pool(act1, ksize=[1, filter_shape[1], filter_shape[2], 1], strides=[1, filter_shape[1], filter_shape[2], 1], padding='SAME')
@@ -157,7 +157,7 @@ class ConvolutionalAutoencoder(object):
 		bd = tf.Variable(tf.random_normal([input_size[1], input_size[2], input_size[3],]))
 		deconv = tf.nn.conv2d_transpose(input_to_decode, filter=wd, strides=strides, padding=padding, output_shape=input_size) + bd
 		if activate:
-			act = tf.nn.relu(deconv)
+			act = tf.nn.relu6(deconv)
 		else:
 			act = deconv
 
@@ -168,7 +168,7 @@ class ConvolutionalAutoencoder(object):
 		# Autoencode phase
 		autoenc = tf.nn.conv2d_transpose(signal_from_encoder, filter=wd, strides=strides, padding=padding, output_shape=input_size) + bd
 		if activate:
-			ae_act = tf.nn.relu(autoenc)
+			ae_act = tf.nn.relu6(autoenc)
 		else:
 			ae_act = autoenc
 		self.pretrainer_operations.append(ae_act)
@@ -370,19 +370,18 @@ def get_batch(batch_size):
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
 	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 64, strides=[1, 5, 5, 1], activate=False)
-	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	#autoencoder.add_local_response_normalization()
-	#autoencoder.add_dropout(keep_prob)
-	#autoencoder.add_conv2d(5, 5, 64, 128, strides=[1, 3, 3, 1])
-	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	#autoencoder.add_local_response_normalization()
-	#autoencoder.add_dropout(keep_prob)
-	#autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
-	#autoencoder.add_local_response_normalization()
-	#autoencoder.add_dropout(keep_prob)
+	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	autoencoder.add_local_response_normalization()
+	autoencoder.add_dropout(keep_prob)
+	autoencoder.add_conv2d(5, 5, 64, 128, strides=[1, 3, 3, 1])
+	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	autoencoder.add_local_response_normalization()
+	autoencoder.add_dropout(keep_prob)
+	autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
+	autoencoder.add_local_response_normalization()
+	autoencoder.add_dropout(keep_prob)
 	autoencoder.add_flatten()
-	#autoencoder.add_fc(128)
-	autoencoder.add_fc(32)
+	autoencoder.add_fc(128)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
@@ -393,13 +392,13 @@ with tf.Session() as sess:
 		dec = autoencoder.get_pretrainer_output(layer)
 		#l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
 		l2_cost = tf.nn.l2_loss(enc - dec)
-		#optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
-		optimizers.append(None) #optimizer)
+		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
+		optimizers.append(optimizer)
 
 	# Get final ops
 	encoder = autoencoder.get_encoder_output()
 	decoder = autoencoder.get_decoder_output()
-	global_loss = tf.nn.l2_loss(input_batch - decoder)
+	global_loss = tf.nn.l2_loss(input_batch - decoder) + tf.reduce_sum(encoder) # for reduce sum, use (encoder, 1) to get it for each example.
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
 	# Init variables.
@@ -410,9 +409,11 @@ with tf.Session() as sess:
 	# Right now the graph can be loaded with tf.import_graph_def OR the variables can be populated with Restore, but not both (yet).
 	# The graph.pbtxt holds graph structure (in model folder).  model-checkpoint has values/weights.
 	# TODO: Review when bug is fixed. (2015/11/29)
-	if os.path.isfile("./model/checkpoint.model"):
+	if os.path.isfile("./model/checkpoint"):
 		print("Restored model state.")
 		saver.restore(sess, "./model/checkpoint.model")
+	else:
+		print("No model found.  Starting new model.")
 
 	# Begin training
 	for level, optimizer in enumerate(optimizers):
@@ -420,12 +421,12 @@ with tf.Session() as sess:
 			for iteration in range(TRAINING_ITERATIONS):
 				x_batch, y_batch = get_batch(BATCH_SIZE)
 				#sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.001, high=0.001, size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.0, high=0.0, size=[BATCH_SIZE, REPRESENTATION_SIZE])}) # y_batch is denoised.
+				loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.1, high=0.1, size=[BATCH_SIZE, REPRESENTATION_SIZE])}) # y_batch is denoised.
 				print("Iter {}: {}".format(iteration, loss1))
 				if iteration % TRAINING_REPORT_INTERVAL == 0:
 					# Checkpoint progress
 					print("Finished batch {}".format(iteration))
-					saver.save(sess, "./model/checkpoint.model", global_step=iteration)
+					saver.save(sess, "./model/checkpoint.model") #, global_step=iteration)
 
 					# Render output sample
 					#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
@@ -433,10 +434,13 @@ with tf.Session() as sess:
 
 					# Randomly generated sample
 					#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+					feature = np.zeros((BATCH_SIZE, REPRESENTATION_SIZE), dtype=np.float)
+					feature[0,randint(0, REPRESENTATION_SIZE-1)] = 1.0
 					decoded = sess.run(decoder, feed_dict={
 						input_batch:np.zeros(shape=[BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH]), 
-						encoded_batch:encoded, 
-						#encoded_batch:encoded+np.random.uniform(low=encoded.min()-0.1, high=encoded.max()+0.1, size=[BATCH_SIZE, REPRESENTATION_SIZE]), 
+						#encoded_batch:encoded, 
+						encoded_batch:feature,
+						#encoded_batch:np.random.uniform(low=-1.0, high=1.0, size=[BATCH_SIZE, REPRESENTATION_SIZE]), 
 						keep_prob:1.0})
 					#img_tensor = tf.image.encode_jpeg(decoded[0])
 					decoded_prefilter = decoded/decoded.std()
