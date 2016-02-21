@@ -13,7 +13,7 @@ LEARNING_RATE = 0.1
 TRAINING_ITERATIONS = 50000
 TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 64
-BATCH_SIZE = 10
+BATCH_SIZE = 32
 IMAGE_WIDTH = 128
 IMAGE_HEIGHT = 128
 IMAGE_DEPTH = 3
@@ -89,6 +89,36 @@ class ConvolutionalAutoencoder(object):
 		else:
 			act3 = fc3
 		self.pretrainer_operations.append(act3)
+
+	def add_softmax(self):
+		self._add_softmax_encoder(self._last_encoder)
+		self._last_encoder = self.encoder_operations[-1]
+
+		encoder = self.encoder_operations[-1]
+		def anon(stream_signal):
+			self._add_softmax_decoder(encoder, stream_signal)
+		self.build_queue.append(anon)
+
+	def _add_softmax_encoder(self, input_to_encode):
+		print("SOFTMAX ENC")
+		act = tf.nn.softmax(input_to_encode)
+
+		self.encoder_operations.append(act)
+		self.encoder_weights.append(None)
+		self.encoder_biases.append(None)
+
+	def _add_softmax_decoder(self, signal_from_encoder, input_to_decode):
+		print("SOFTMAX DEC")
+		# Decode requires two steps.  First, decoder path.
+		dec = tf.nn.softmax(input_to_decode)
+
+		self.decoder_operations.append(dec)
+		self.decoder_weights.append(None)
+		self.decoder_biases.append(None)
+
+		# Second, autoencoder path.
+		ae = tf.nn.softmax(signal_from_encoder)
+		self.pretrainer_operations.append(ae)
 
 	def add_local_response_normalization(self):
 		self._add_lrn_encoder(self._last_encoder)
@@ -308,12 +338,6 @@ class ConvolutionalAutoencoder(object):
 		del self.build_queue
 		del self._last_encoder
 
-# Define objects
-input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="image_input")
-encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
-keep_prob = tf.placeholder(tf.float32)
-autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
-
 # Define data-source iterator
 def example_generator(file_glob, noise=0.0, cache=True):
 	filenames = glob(file_glob)
@@ -365,11 +389,51 @@ def get_batch(batch_size):
 		batch[index,:,:,:] = x[:,:,:]
 		labels[index,:,:,:] = y[:,:,:]
 	return batch, labels
+
+# Convenience method for writing an output image from an encoded array
+def save_reconstruction(session, decoder, array, filename):
+	decoded = session.run(decoder, feed_dict={
+		input_batch:np.zeros(shape=[BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH]), 
+		encoded_batch:array, 
+		#encoded_batch:np.random.uniform(low=-1.0, high=1.0, size=[BATCH_SIZE, REPRESENTATION_SIZE]), 
+		keep_prob:1.0})
+	#img_tensor = tf.image.encode_jpeg(decoded[0])
+	decoded_min = decoded[0].min()
+	decoded_max = decoded[0].max()
+	decoded_norm = (decoded[0]-decoded_min)/(decoded_max-decoded_min)
+	img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
+	img = Image.fromarray(img_arr)
+	img.save(filename)
+
+# Utility to filter image mean from samples
+class MeanFilter(object):
+	def __init__(self, representation_size):
+		self.accumulator = np.zeros([1, representation_size], dtype=np.float)
+		self.count = 0
+		self.encountered = set() # Better to have some bloom-filter thing, but for now, be lazy.
+
+	def add_batch(self, batch):
+		pass
+
+	def add_example(self, example):
+		pass
+
+	def filter_batch(self, batch):
+		pass
+
+	def filter_example(self, example):
+		pass
+
+# Define objects
+input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="image_input")
+encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
+keep_prob = tf.placeholder(tf.float32)
+autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
 			
 # Run!
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(11, 11, IMAGE_DEPTH, 64, strides=[1, 5, 5, 1], activate=False)
+	autoencoder.add_conv2d(5, 5, IMAGE_DEPTH, 64, strides=[1, 3, 3, 1], activate=False)
 	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
 	autoencoder.add_local_response_normalization()
 	autoencoder.add_dropout(keep_prob)
@@ -381,7 +445,7 @@ with tf.Session() as sess:
 	autoencoder.add_local_response_normalization()
 	autoencoder.add_dropout(keep_prob)
 	autoencoder.add_flatten()
-	autoencoder.add_fc(128)
+	autoencoder.add_fc(512)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
@@ -398,7 +462,7 @@ with tf.Session() as sess:
 	# Get final ops
 	encoder = autoencoder.get_encoder_output()
 	decoder = autoencoder.get_decoder_output()
-	global_loss = tf.nn.l2_loss(input_batch - decoder) + tf.reduce_sum(encoder) # for reduce sum, use (encoder, 1) to get it for each example.
+	global_loss = tf.nn.l2_loss(input_batch - decoder) # for reduce sum, use (encoder, 1) to get it for each example.
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
 	# Init variables.
@@ -434,24 +498,12 @@ with tf.Session() as sess:
 
 					# Randomly generated sample
 					#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-					feature = np.zeros((BATCH_SIZE, REPRESENTATION_SIZE), dtype=np.float)
-					feature[0,randint(0, REPRESENTATION_SIZE-1)] = 1.0
-					decoded = sess.run(decoder, feed_dict={
-						input_batch:np.zeros(shape=[BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH]), 
-						#encoded_batch:encoded, 
-						encoded_batch:feature,
-						#encoded_batch:np.random.uniform(low=-1.0, high=1.0, size=[BATCH_SIZE, REPRESENTATION_SIZE]), 
-						keep_prob:1.0})
-					#img_tensor = tf.image.encode_jpeg(decoded[0])
-					decoded_prefilter = decoded/decoded.std()
-					decoded_min = decoded_prefilter[0].min()
-					decoded_max = decoded_prefilter[0].max()
-					decoded_norm = (decoded_prefilter[0]-decoded_min)/(decoded_max-decoded_min)
-					img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
-					img = Image.fromarray(img_arr)
-					img.save("test_{}_{}.jpg".format(level, iteration))
+					save_reconstruction(sess, decoder, encoded, "test_{}_{}.jpg".format(level, iteration))
 
 					# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
 		except KeyboardInterrupt:
 			from IPython.core.debugger import Tracer
 			Tracer()()
+		except Exception as e:
+			print("Odd exception. {}".format(e))
+			print("Recovering")
