@@ -12,10 +12,10 @@ import tensorflow as tf
 LEARNING_RATE = 0.1
 TRAINING_ITERATIONS = 50000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 64
-BATCH_SIZE = 32
-IMAGE_WIDTH = 128
-IMAGE_HEIGHT = 128
+REPRESENTATION_SIZE = 2
+BATCH_SIZE = 1
+IMAGE_WIDTH = 64
+IMAGE_HEIGHT = 64
 IMAGE_DEPTH = 3
 
 # Create model
@@ -339,10 +339,12 @@ class ConvolutionalAutoencoder(object):
 		del self._last_encoder
 
 # Define data-source iterator
-def example_generator(file_glob, noise=0.0, cache=True):
+def example_generator(file_glob, noise=0, cache=True):
 	filenames = glob(file_glob)
 	file_cache = dict()
-	for filename in cycle(filenames):
+	#for filename in cycle(filenames):
+	while True:
+		filename = choice(filenames)
 		example = None
 		target = None
 		if cache and filename in file_cache:
@@ -378,6 +380,43 @@ def example_generator(file_glob, noise=0.0, cache=True):
 			example = target
 		yield example, target
 
+# Utility to filter image mean from samples
+class MeanFilter(object):
+	def __init__(self, height, width, depth):
+		self.accumulator = np.zeros([height, width, depth], dtype=np.float)
+		self.count = 0
+		self.encountered = set() # Better to have some bloom-filter thing, but for now, be lazy.
+
+	def add_batch(self, batch):
+		"""Assume batch is a tensor of shape [b, h, w, d].  Calls add_example repeatedly."""
+		for index in range(batch.shape[0]):
+			self.add_example(batch[index,:,:,:])
+
+	def add_example(self, example):
+		if example.tobytes() not in self.encountered:
+			self.encountered.add(example.tobytes())
+			self.accumulator += example
+			self.count += 1
+
+	def filter_batch(self, batch):
+		new_batch = np.zeros([batch.shape[0], self.accumulator.shape[1], self.accumulator.shape[2], self.accumulator.shape[3]])
+		for index in range(batch.shape[0]):
+			new_batch[index,:,:,:] = self.filter_example(batch[index,:,:,:])
+
+	def filter_example(self, example):
+		return example - (self.accumulator/self.count)
+
+	def unfilter_example(self, example):
+		return example + (self.accumulator/self.count)
+
+# Define objects
+input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="image_input")
+encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
+keep_prob = tf.placeholder(tf.float32)
+autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
+mean_filter = MeanFilter(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH)
+
+# Define the batch iterator
 gen = example_generator(sys.argv[1], noise=0.1)
 def get_batch(batch_size):
 	batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
@@ -386,10 +425,13 @@ def get_batch(batch_size):
 		if index >= batch_size:
 			break
 		x, y = data
+		#mean_filter.add_example(y)
+		#batch[index,:,:,:] = mean_filter.filter_example(x[:,:,:])
+		#labels[index,:,:,:] = mean_filter.filter_example(y[:,:,:])
 		batch[index,:,:,:] = x[:,:,:]
 		labels[index,:,:,:] = y[:,:,:]
 	return batch, labels
-
+			
 # Convenience method for writing an output image from an encoded array
 def save_reconstruction(session, decoder, array, filename):
 	decoded = session.run(decoder, feed_dict={
@@ -401,39 +443,15 @@ def save_reconstruction(session, decoder, array, filename):
 	decoded_min = decoded[0].min()
 	decoded_max = decoded[0].max()
 	decoded_norm = (decoded[0]-decoded_min)/(decoded_max-decoded_min)
+	#decoded_norm = mean_filter.unfilter_example(decoded[0])
 	img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
 	img = Image.fromarray(img_arr)
 	img.save(filename)
 
-# Utility to filter image mean from samples
-class MeanFilter(object):
-	def __init__(self, representation_size):
-		self.accumulator = np.zeros([1, representation_size], dtype=np.float)
-		self.count = 0
-		self.encountered = set() # Better to have some bloom-filter thing, but for now, be lazy.
-
-	def add_batch(self, batch):
-		pass
-
-	def add_example(self, example):
-		pass
-
-	def filter_batch(self, batch):
-		pass
-
-	def filter_example(self, example):
-		pass
-
-# Define objects
-input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="image_input")
-encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
-keep_prob = tf.placeholder(tf.float32)
-autoencoder = ConvolutionalAutoencoder(input_batch, encoded_batch)
-			
 # Run!
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(5, 5, IMAGE_DEPTH, 64, strides=[1, 3, 3, 1], activate=False)
+	autoencoder.add_conv2d(3, 3, IMAGE_DEPTH, 64, strides=[1, 1, 1, 1], activate=False)
 	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
 	autoencoder.add_local_response_normalization()
 	autoencoder.add_dropout(keep_prob)
@@ -445,11 +463,11 @@ with tf.Session() as sess:
 	autoencoder.add_local_response_normalization()
 	autoencoder.add_dropout(keep_prob)
 	autoencoder.add_flatten()
-	autoencoder.add_fc(512)
+	autoencoder.add_fc(16)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
 
-	# Collect trainers.
+	# Collect pre-trainers.
 	optimizers = list()
 	for layer in range(autoencoder.get_layer_count()-1):
 		enc = autoencoder.get_encoder_output(layer)
@@ -457,12 +475,14 @@ with tf.Session() as sess:
 		#l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
 		l2_cost = tf.nn.l2_loss(enc - dec)
 		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
+		#optimizer = None # If our first layer is flatten, we don't get a gradient and using enc-dec causes an error.
 		optimizers.append(optimizer)
 
 	# Get final ops
 	encoder = autoencoder.get_encoder_output()
 	decoder = autoencoder.get_decoder_output()
-	global_loss = tf.nn.l2_loss(input_batch - decoder) # for reduce sum, use (encoder, 1) to get it for each example.
+	#global_loss = tf.nn.l2_loss(input_batch - decoder) + np.abs(1-tf.reduce_sum(np.abs(encoder)))
+	global_loss = tf.reduce_sum(tf.abs(input_batch - decoder), 0) + tf.abs(1-tf.reduce_sum(tf.abs(encoder)))
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
 	# Init variables.
@@ -485,7 +505,7 @@ with tf.Session() as sess:
 			for iteration in range(TRAINING_ITERATIONS):
 				x_batch, y_batch = get_batch(BATCH_SIZE)
 				#sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.001, high=0.001, size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.1, high=0.1, size=[BATCH_SIZE, REPRESENTATION_SIZE])}) # y_batch is denoised.
+				loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.zeros((BATCH_SIZE, REPRESENTATION_SIZE), dtype=np.float)}) # y_batch is denoised.
 				print("Iter {}: {}".format(iteration, loss1))
 				if iteration % TRAINING_REPORT_INTERVAL == 0:
 					# Checkpoint progress
