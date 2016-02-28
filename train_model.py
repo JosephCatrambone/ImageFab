@@ -10,13 +10,14 @@ import numpy as np
 import tensorflow as tf
 
 LEARNING_RATE = 0.1
-TRAINING_ITERATIONS = 50000
-TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 2
+TRAINING_ITERATIONS = 500000
+TRAINING_REPORT_INTERVAL = 1000
+REPRESENTATION_SIZE = 10
 BATCH_SIZE = 1
 IMAGE_WIDTH = 64
 IMAGE_HEIGHT = 64
 IMAGE_DEPTH = 3
+SPARSITY_PENALTY = 3 # The bigger this is, the more important we have a single sparse value.
 
 # Create model
 class ConvolutionalAutoencoder(object):
@@ -59,7 +60,7 @@ class ConvolutionalAutoencoder(object):
 		be = tf.Variable(tf.random_normal([hidden_size,]))
 		fc1 = tf.matmul(input_to_encode, we) + be
 		if activate:
-			act1 = tf.nn.relu6(fc1)
+			act1 = tf.nn.tanh(fc1)
 		else:
 			act1 = fc1
 
@@ -74,7 +75,7 @@ class ConvolutionalAutoencoder(object):
 		bd = tf.Variable(tf.random_normal([visible_size, ]))
 		fc2 = tf.matmul(input_to_decode, wd) + bd
 		if activate:
-			act2 = tf.nn.relu6(fc2)
+			act2 = tf.nn.tanh(fc2)
 		else:
 			act2 = fc2
 
@@ -85,7 +86,7 @@ class ConvolutionalAutoencoder(object):
 		# Second, autoencoder path.
 		fc3 = tf.matmul(signal_from_encoder, wd) + bd
 		if activate:
-			act3 = tf.nn.relu6(fc3)
+			act3 = tf.nn.tanh(fc3)
 		else:
 			act3 = fc3
 		self.pretrainer_operations.append(act3)
@@ -122,6 +123,7 @@ class ConvolutionalAutoencoder(object):
 
 	def add_local_response_normalization(self):
 		self._add_lrn_encoder(self._last_encoder)
+		self._last_encoder = self.encoder_operations[-1]
 
 		encoder = self.encoder_operations[-1]
 		def anon(backward_stream):
@@ -451,38 +453,29 @@ def save_reconstruction(session, decoder, array, filename):
 # Run!
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
-	autoencoder.add_conv2d(3, 3, IMAGE_DEPTH, 64, strides=[1, 1, 1, 1], activate=False)
-	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	autoencoder.add_local_response_normalization()
-	autoencoder.add_dropout(keep_prob)
-	autoencoder.add_conv2d(5, 5, 64, 128, strides=[1, 3, 3, 1])
-	autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
-	autoencoder.add_local_response_normalization()
-	autoencoder.add_dropout(keep_prob)
-	autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
-	autoencoder.add_local_response_normalization()
-	autoencoder.add_dropout(keep_prob)
+	#autoencoder.add_conv2d(5, 5, IMAGE_DEPTH, 64, strides=[1, 3, 3, 1], activate=False)
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	#autoencoder.add_local_response_normalization()
+	#autoencoder.add_dropout(keep_prob)
+	#autoencoder.add_conv2d(5, 5, 64, 128, strides=[1, 3, 3, 1])
+	#autoencoder.add_pool(1, 2, 2, 1, strides=[1, 1, 1, 1])
+	#autoencoder.add_local_response_normalization()
+	#autoencoder.add_dropout(keep_prob)
+	#autoencoder.add_conv2d(5, 5, 128, 256, strides=[1, 3, 3, 1])
+	#autoencoder.add_local_response_normalization()
+	#autoencoder.add_dropout(keep_prob)
 	autoencoder.add_flatten()
-	autoencoder.add_fc(16)
+	autoencoder.add_fc(128, activate=False)
 	autoencoder.add_fc(REPRESENTATION_SIZE)
 	autoencoder.finalize()
-
-	# Collect pre-trainers.
-	optimizers = list()
-	for layer in range(autoencoder.get_layer_count()-1):
-		enc = autoencoder.get_encoder_output(layer)
-		dec = autoencoder.get_pretrainer_output(layer)
-		#l2_cost = tf.reduce_sum(tf.pow(enc - dec, 2))
-		l2_cost = tf.nn.l2_loss(enc - dec)
-		optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(l2_cost)
-		#optimizer = None # If our first layer is flatten, we don't get a gradient and using enc-dec causes an error.
-		optimizers.append(optimizer)
 
 	# Get final ops
 	encoder = autoencoder.get_encoder_output()
 	decoder = autoencoder.get_decoder_output()
-	#global_loss = tf.nn.l2_loss(input_batch - decoder) + np.abs(1-tf.reduce_sum(np.abs(encoder)))
-	global_loss = tf.reduce_sum(tf.abs(input_batch - decoder), 0) + tf.abs(1-tf.reduce_sum(tf.abs(encoder)))
+	global_reconstruction_loss = tf.nn.l2_loss(input_batch - decoder)
+	#global_representation_loss = tf.pow(tf.abs(1 - np.sum(tf.abs(encoder))), SPARSITY_PENALTY)
+	global_loss = global_reconstruction_loss# + global_representation_loss 
+	#global_loss = tf.reduce_sum(tf.abs(input_batch - decoder)) + tf.abs(1-tf.reduce_sum(tf.abs(encoder)))
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
 	# Init variables.
@@ -500,27 +493,34 @@ with tf.Session() as sess:
 		print("No model found.  Starting new model.")
 
 	# Begin training
-	for level, optimizer in enumerate(optimizers):
+	for iteration in range(1, TRAINING_ITERATIONS):
 		try:
-			for iteration in range(TRAINING_ITERATIONS):
-				x_batch, y_batch = get_batch(BATCH_SIZE)
-				#sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.001, high=0.001, size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-				loss1, _ = sess.run([global_loss, global_optimizer], feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.zeros((BATCH_SIZE, REPRESENTATION_SIZE), dtype=np.float)}) # y_batch is denoised.
-				print("Iter {}: {}".format(iteration, loss1))
-				if iteration % TRAINING_REPORT_INTERVAL == 0:
-					# Checkpoint progress
-					print("Finished batch {}".format(iteration))
-					saver.save(sess, "./model/checkpoint.model") #, global_step=iteration)
+			x_batch, y_batch = get_batch(BATCH_SIZE)
+			#sess.run(optimizer, feed_dict={input_batch:x_batch, keep_prob:0.5, encoded_batch:np.random.uniform(low=-0.001, high=0.001, size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+			loss1, _, encoder_output = sess.run(
+				[global_loss, global_optimizer, encoder], 
+				feed_dict={
+					input_batch:x_batch, 
+					keep_prob:0.5, 
+					encoded_batch:np.random.uniform(low=-1e-10, high=1e-10, size=[BATCH_SIZE, REPRESENTATION_SIZE])
+				}
+			) # y_batch is denoised.
+			print("Iter {}: {} \t {}".format(iteration, loss1, encoder_output[0,:]))
+			if iteration % TRAINING_REPORT_INTERVAL == 0:
+				# Checkpoint progress
+				print("Finished batch {}".format(iteration))
+				saver.save(sess, "./model/checkpoint.model") #, global_step=iteration)
 
-					# Render output sample
-					#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
-					encoded = sess.run(encoder, feed_dict={input_batch:x_batch, keep_prob:1.0})
+				# Render output sample
+				#encoded, decoded = sess.run([encoder, decoder], feed_dict={input_batch:x_batch, encoded_batch:np.random.uniform(size=(BATCH_SIZE, REPRESENTATION_SIZE))})
+				encoded = sess.run(encoder, feed_dict={input_batch:x_batch, keep_prob:1.0})
 
-					# Randomly generated sample
-					#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
-					save_reconstruction(sess, decoder, encoded, "test_{}_{}.jpg".format(level, iteration))
+				# Randomly generated sample
+				#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
+				print("Encoded: {}".format(encoded))
+				save_reconstruction(sess, decoder, encoded, "test_{}.jpg".format(iteration))
 
-					# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
+				# Reconstructed sample ends up looking just like the random sample, so don't waste time making it.
 		except KeyboardInterrupt:
 			from IPython.core.debugger import Tracer
 			Tracer()()
