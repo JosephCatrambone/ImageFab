@@ -10,166 +10,114 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 
-LEARNING_RATE = 0.01
+# DEBUG ONLY
+from IPython.core.debugger import Tracer
+
+
+LEARNING_RATE = 0.1
 TRAINING_ITERATIONS = 50000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 50
+REPRESENTATION_SIZE = 20
 BATCH_SIZE = 1
-IMAGE_WIDTH = 64
-IMAGE_HEIGHT = 64
+IMAGE_WIDTH = 128
+IMAGE_HEIGHT = 128
 IMAGE_DEPTH = 3
 
-def build_fc(hidden_size, input_source, weight=None, bias=None, activate=True):
+def build_fc(input_source, hidden_size, weight=None, bias=None, activate=True):
+	# Figure out size of input and create weight matrix of appropriate size.
 	shape = input_source.get_shape().as_list()[-1]
 	if weight is None:
 		weight = tf.Variable(tf.random_normal([shape, hidden_size]))
 	if bias is None:
 		bias = tf.Variable(tf.random_normal([hidden_size,]))
 
+	# Get preactivations
 	result = tf.nn.bias_add(tf.matmul(input_source, weight), bias)
 
+	# Sometimes activate
 	if activate:
 		result = tf.nn.tanh(result)
 
 	return result, weight, bias
 
+def build_conv(source, filter_shape, strides, padding='SAME', activate=True):
+	we = tf.Variable(tf.random_normal(filter_shape))
+	be = tf.Variable(tf.random_normal([filter_shape[-1],]))
+	conv = tf.nn.bias_add(tf.nn.conv2d(source, filter=we, strides=strides, padding=padding), be)
+	if activate:
+		act = tf.nn.relu6(conv)
+	else:
+		act = conv
+	return act, we, be
+
+def build_deconv(source, output_shape, filter_shape, strides, padding='SAME', activate=True):
+	wd = tf.Variable(tf.random_normal(filter_shape))
+	bd = tf.Variable(tf.random_normal(output_shape[1:]))
+	deconv = tf.nn.conv2d_transpose(source, filter=wd, strides=strides, padding=padding, output_shape=output_shape)
+	if activate:
+		act = tf.nn.relu6(deconv)
+	else:
+		act = deconv
+	return act, wd, bd
+
+def build_max_pool(source, kernel_shape, strides):
+	return tf.nn.max_pool(source, ksize=kernel_shape, strides=strides, padding='SAME')
+
+def build_unpool(source, kernel_shape):
+	input_shape = source.get_shape().as_list()
+	return tf.image.resize_images(source, input_shape[1]*kernel_shape[1], input_shape[2]*kernel_shape[2])
+
 # Create model
 def build_model(image_input_source, encoder_input_source, input_encoder_interpolation, dropout_toggle):
 	"""Image and Encoded are input placeholders.  input_encoded_interp is the toggle between input (when 0) and encoded (when 1).
 	Returns a decoder and the encoder output."""
-
+	# We have to match this output size.
 	batch, input_height, input_width, input_depth = image_input_source.get_shape().as_list()
 
-	flatten = tf.reshape(image_input_source, [-1, input_height*input_width*input_depth])
+	# Convolutional ops will go here.
+	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
+	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
+	c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 2, 2, 1])
+	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
+	conv_output = c3
 
-	fc0, w0, b0 = build_fc(128, flatten, activate=False)
-	fc1, w1, b1 = build_fc(REPRESENTATION_SIZE, fc0)
+	# Transition to FC layers.
+	pre_flat_shape = conv_output.get_shape().as_list()
+	flatten = tf.reshape(conv_output, [-1, pre_flat_shape[1]*pre_flat_shape[2]*pre_flat_shape[3]])
 
-	encoded_output = fc1
+	# Dense connections
+	fc0, wf0, bf0 = build_fc(flatten, 128)
+	fc1, wf1, bf1 = build_fc(fc0, REPRESENTATION_SIZE)
+
+	# Output point and our encoder mix-in.
+	encoded_output = tf.nn.softmax(fc1)
 	encoded_input = encoder_input_source*input_encoder_interpolation + (1-input_encoder_interpolation)*encoded_output
 	encoded_input.set_shape(encoded_output.get_shape()) # Otherwise we can't ascertain the size.
 
-	fc2, w2, b2 = build_fc(128, encoded_input)
-	fc3, w3, b3 = build_fc(input_height*input_width*input_depth, fc2, activate=False)
+	# More dense connections on the offset.
+	fc2, wf2, bf2 = build_fc(encoded_input, 128)
+	fc3, wf3, bf3 = build_fc(fc2, flatten.get_shape().as_list()[-1], activate=False)
 
-	unflatten = tf.reshape(fc3, image_input_source.get_shape().as_list()) #[-1, input_height, input_width, input_depth])
+	# Expand for more convolutional operations.
+	unflatten = tf.reshape(fc3, [-1, pre_flat_shape[1], pre_flat_shape[2], pre_flat_shape[3]]) #pre_flat_shape)
 
-	return unflatten, encoded_output
+	# More convolutions here.
+	dc0 = build_unpool(unflatten, [1, 2, 2, 1])
+	dc1, wdc1, bdc1 = build_deconv(dc0, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 2, 2, 1])
+	dc2 = build_unpool(dc1, [1, 2, 2, 1])
+	dc3, wdc3, bdc3 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
+	deconv_output = dc3
+
+	# Return result + encoder output
+	return deconv_output, encoded_output
 
 # Other methods we need to finish migrating.
-def add_softmax(self):
-	self._add_softmax_encoder(self._last_encoder)
-	self._last_encoder = self.encoder_operations[-1]
-
-	encoder = self.encoder_operations[-1]
-	def anon(stream_signal):
-		self._add_softmax_decoder(encoder, stream_signal)
-	self.build_queue.append(anon)
-
-def _add_softmax_encoder(self, input_to_encode):
-	print("SOFTMAX ENC")
-	act = tf.nn.softmax(input_to_encode)
-
-	self.encoder_operations.append(act)
-	self.encoder_weights.append(None)
-	self.encoder_biases.append(None)
-
-def _add_softmax_decoder(self, signal_from_encoder, input_to_decode):
-	print("SOFTMAX DEC")
-	# Decode requires two steps.  First, decoder path.
-	dec = tf.nn.softmax(input_to_decode)
-
-	self.decoder_operations.append(dec)
-	self.decoder_weights.append(None)
-	self.decoder_biases.append(None)
-
-	# Second, autoencoder path.
-	ae = tf.nn.softmax(signal_from_encoder)
-	self.pretrainer_operations.append(ae)
-
-def add_local_response_normalization(self):
-	self._add_lrn_encoder(self._last_encoder)
-	self._last_encoder = self.encoder_operations[-1]
-
-	encoder = self.encoder_operations[-1]
-	def anon(backward_stream):
-		self._add_lrn_decoder(encoder, backward_stream)
-	self.build_queue.append(anon)
-
+# AGAIN THESE ARE PENDING MIGRATION!  THEY DON'T DO ANYTHING YET!
 def _add_lrn_encoder(self, input_to_encode):
 	enc_op = tf.nn.local_response_normalization(input_to_encode)
 	self.encoder_operations.append(enc_op)
 	self.encoder_weights.append(None)
 	self.encoder_biases.append(None)
-
-def _add_lrn_decoder(self, signal_from_encoder, input_to_decode):
-	# Decoder path is straight.
-	ident = tf.identity(input_to_decode)
-
-	self.decoder_operations.append(ident)
-	self.decoder_weights.append(None)
-	self.decoder_biases.append(None)
-
-	# And decoder
-	ident2 = tf.identity(signal_from_encoder)
-	self.pretrainer_operations.append(ident2)
-
-def add_conv2d(self, filter_height, filter_width, filter_depth, num_filters, strides=None, padding='SAME', activate=True):
-	if not strides:
-		strides = [1, filter_height, filter_width, 1]
-	input_size = self._last_encoder.get_shape().as_list()
-	filter_shape = [filter_height, filter_width, filter_depth, num_filters]
-
-	self._add_conv_encoder(self._last_encoder, filter_shape, strides, padding, activate)
-	self._last_encoder = self.encoder_operations[-1]
-
-	encoder_ref = self.encoder_operations[-1]
-	def anon(signal_to_decode):
-		self._add_conv_decoder(encoder_ref, signal_to_decode, input_size, filter_shape, strides, padding, activate)
-	self.build_queue.append(anon)
-
-def _add_conv_encoder(self, input_to_encode, filter_shape, strides, padding='SAME', activate=True):
-	print("CONV ENC {} (x) {}".format(input_to_encode.get_shape(), filter_shape))
-	# Encode phase
-	we = tf.Variable(tf.random_normal(filter_shape))
-	be = tf.Variable(tf.random_normal([filter_shape[-1],]))
-	conv = tf.nn.conv2d(input_to_encode, filter=we, strides=strides, padding=padding) + be
-	if activate:
-		act1 = tf.nn.relu6(conv)
-	else:
-		act1 = conv
-	#pool = tf.nn.max_pool(act1, ksize=[1, filter_shape[1], filter_shape[2], 1], strides=[1, filter_shape[1], filter_shape[2], 1], padding='SAME')
-	#norm = tf.nn.lrn(pool, strides[1], bias=1.0, alpha=0.001, beta=0.75)
-
-	self.encoder_operations.append(act1)
-	self.encoder_weights.append(we)
-	self.encoder_biases.append(be)
-
-def _add_conv_decoder(self, signal_from_encoder, input_to_decode, input_size, filter_size, strides, padding='SAME', activate=True):
-	print("CONV DEC {} (x) {}".format(input_size, filter_size))
-	# Decode phase
-	dec_shape = signal_from_encoder.get_shape().as_list()
-
-	# Deconv2D args:
-	wd = tf.Variable(tf.random_normal(filter_size))
-	bd = tf.Variable(tf.random_normal([input_size[1], input_size[2], input_size[3],]))
-	deconv = tf.nn.conv2d_transpose(input_to_decode, filter=wd, strides=strides, padding=padding, output_shape=input_size) + bd
-	if activate:
-		act = tf.nn.relu6(deconv)
-	else:
-		act = deconv
-
-	self.decoder_operations.append(act)
-	self.decoder_weights.append(wd)
-	self.decoder_biases.append(bd)
-
-	# Autoencode phase
-	autoenc = tf.nn.conv2d_transpose(signal_from_encoder, filter=wd, strides=strides, padding=padding, output_shape=input_size) + bd
-	if activate:
-		ae_act = tf.nn.relu6(autoenc)
-	else:
-		ae_act = autoenc
-	self.pretrainer_operations.append(ae_act)
 
 def add_pool(self, batch_size, kernel_height, kernel_width, kernel_depth, strides=None):
 	input_shape = self._last_encoder.get_shape().as_list()
@@ -206,15 +154,6 @@ def _add_pool_decoder(self, signal_from_encoder, input_to_decode, input_shape, k
 	autoenc = tf.image.resize_images(signal_from_encoder, input_shape[1], input_shape[2])
 	self.pretrainer_operations.append(autoenc)
 
-def add_dropout(self, dropout_toggle):
-	self._add_dropout_encoder(self._last_encoder, dropout_toggle)
-	encoder_ref = self.encoder_operations[-1]
-	self._last_encoder = encoder_ref
-
-	def anon(signal_to_decode):
-		self._add_dropout_decoder(encoder_ref, signal_to_decode, dropout_toggle)
-	self.build_queue.append(anon)
-
 def _add_dropout_encoder(self, to_encode, dropout_toggle):
 	print("DROPOUT ENC")
 	# Encode
@@ -223,50 +162,6 @@ def _add_dropout_encoder(self, to_encode, dropout_toggle):
 	self.encoder_operations.append(drop)
 	self.encoder_weights.append(None)
 	self.encoder_biases.append(None)
-
-def _add_dropout_decoder(self, signal_from_encoder, input_to_decode, dropout_toggle):
-	print("DROPOUT DEC")
-	# Decode
-	drop = tf.nn.dropout(input_to_decode, dropout_toggle)
-
-	self.decoder_operations.append(drop)
-	self.decoder_weights.append(None)
-	self.decoder_biases.append(None)
-
-	# Not strictly necessary, but...
-	autoenc = tf.nn.dropout(signal_from_encoder, dropout_toggle)
-	self.pretrainer_operations.append(autoenc)
-
-def add_flatten(self):
-	input_shape = self._last_encoder.get_shape().as_list()
-
-	self._add_flatten_encoder(self._last_encoder, *input_shape)
-	encoder_ref = self.encoder_operations[-1]
-	self._last_encoder = encoder_ref
-
-	def anon(signal_to_decode):
-		self._add_flatten_decoder(encoder_ref, signal_to_decode, *input_shape)
-	self.build_queue.append(anon)
-
-def _add_flatten_encoder(self, to_encode, batch_size, input_height, input_width, input_depth):
-	# Encode
-	flatten = tf.reshape(to_encode, [-1, input_height*input_width*input_depth])
-
-	self.encoder_operations.append(flatten)
-	self.encoder_weights.append(None)
-	self.encoder_biases.append(None)
-
-def _add_flatten_decoder(self, signal_from_encoder, input_to_decode, batch_size, input_height, input_width, input_depth):
-	# Decode
-	unflatten = tf.reshape(input_to_decode, [-1, input_height, input_width, input_depth])
-
-	self.decoder_operations.append(unflatten)
-	self.decoder_weights.append(None)
-	self.decoder_biases.append(None)
-
-	# Not strictly necessary, but...
-	autoenc = tf.reshape(signal_from_encoder, [-1, input_height, input_width, input_depth])
-	self.pretrainer_operations.append(autoenc)
 
 
 # Define data-source iterator
@@ -317,10 +212,10 @@ input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH,
 encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
 input_encoder_interpolation = tf.placeholder(tf.float32, name="input_encoder_interpolation")
 keep_prob = tf.placeholder(tf.float32, name="keep_probability")
-
+output_objective = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="output_objective")
 
 # Define the batch iterator
-gen = example_generator(sys.argv[1], noise=0.0)
+gen = example_generator(sys.argv[1], noise=0.1)
 def get_batch(batch_size):
 	batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
 	labels = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
@@ -355,7 +250,8 @@ with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
 	decoder, encoder = build_model(input_batch, encoded_batch, input_encoder_interpolation, keep_prob)
 	# Get final ops
-	global_reconstruction_loss = tf.nn.l2_loss(input_batch - decoder)
+	global_reconstruction_loss = tf.reduce_sum((output_objective - decoder)**2, [1, 2, 3]) # Reduce X,Y,W error, but not across batches.
+	#global_reconstruction_loss = tf.nn.l2_loss(output_objective - decoder)
 	#global_representation_loss = tf.pow(tf.abs(1 - np.sum(tf.abs(encoder))), SPARSITY_PENALTY)
 	global_loss = global_reconstruction_loss# + global_representation_loss 
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
@@ -382,12 +278,12 @@ with tf.Session() as sess:
 				[global_loss, global_optimizer, encoder], 
 				feed_dict={
 					input_batch:x_batch, 
-					keep_prob:0.5, 
-					encoded_batch:np.random.uniform(low=-1e-10, high=1e-10, size=[BATCH_SIZE, REPRESENTATION_SIZE]),
+					encoded_batch:np.zeros((BATCH_SIZE, REPRESENTATION_SIZE)),
 					input_encoder_interpolation:0, # Purely input
+					output_objective:y_batch
 				}
 			) # y_batch is denoised.
-			print("Iter {}: {} \t {}".format(iteration, loss1, encoder_output[0,:].sum()))
+			print("Iter {}: {} \n {} \n {}".format(iteration, loss1, encoder_output.sum(), encoder_output[0,:]))
 			if iteration % TRAINING_REPORT_INTERVAL == 0:
 				# Checkpoint progress
 				print("Finished batch {}".format(iteration))
@@ -396,7 +292,6 @@ with tf.Session() as sess:
 				# Render output sample
 				encoded = sess.run(encoder, feed_dict={
 					input_batch:x_batch, 
-					keep_prob:1.0,
 					input_encoder_interpolation:0,
 				})
 
@@ -408,3 +303,12 @@ with tf.Session() as sess:
 		except KeyboardInterrupt:
 			from IPython.core.debugger import Tracer
 			Tracer()()
+	
+	# When complete, stop and let us play.
+	print("Finished")
+	for i in range(REPRESENTATION_SIZE):
+		encoded = np.zeros((BATCH_SIZE, REPRESENTATION_SIZE))
+		encoded[0,i] = 1.0
+		save_reconstruction(sess, decoder, encoded, "enc_{}.jpg".format(i))
+	from IPython.core.debugger import Tracer
+	Tracer()()
