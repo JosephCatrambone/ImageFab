@@ -10,26 +10,29 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 
-# DEBUG ONLY
-from IPython.core.debugger import Tracer
+# Display for debugging
+np.set_printoptions(suppress=True, precision=15, linewidth=200)
 
-
-LEARNING_RATE = 0.1
-TRAINING_ITERATIONS = 50000
+LEARNING_RATE = 0.001
+TRAINING_ITERATIONS = 500000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 20
-BATCH_SIZE = 1
-IMAGE_WIDTH = 128
-IMAGE_HEIGHT = 128
+REPRESENTATION_SIZE = 10
+BATCH_SIZE = 10
+IMAGE_WIDTH = 27
+IMAGE_HEIGHT = 27
 IMAGE_DEPTH = 3
+
+def xavier_init(shape, constant=1):
+	val = constant * np.sqrt(6.0/float(np.sum(np.abs(shape[1:]))))
+	return tf.random_uniform(shape, minval=-val, maxval=val)
 
 def build_fc(input_source, hidden_size, weight=None, bias=None, activate=True):
 	# Figure out size of input and create weight matrix of appropriate size.
 	shape = input_source.get_shape().as_list()[-1]
 	if weight is None:
-		weight = tf.Variable(tf.random_normal([shape, hidden_size]))
+		weight = tf.Variable(xavier_init([shape, hidden_size])) #tf.random_normal([shape, hidden_size]))
 	if bias is None:
-		bias = tf.Variable(tf.random_normal([hidden_size,]))
+		bias = tf.Variable(tf.zeros([hidden_size,]))
 
 	# Get preactivations
 	result = tf.nn.bias_add(tf.matmul(input_source, weight), bias)
@@ -41,8 +44,8 @@ def build_fc(input_source, hidden_size, weight=None, bias=None, activate=True):
 	return result, weight, bias
 
 def build_conv(source, filter_shape, strides, padding='SAME', activate=True):
-	we = tf.Variable(tf.random_normal(filter_shape))
-	be = tf.Variable(tf.random_normal([filter_shape[-1],]))
+	we = tf.Variable(xavier_init(filter_shape))
+	be = tf.Variable(tf.zeros([filter_shape[-1],]))
 	conv = tf.nn.bias_add(tf.nn.conv2d(source, filter=we, strides=strides, padding=padding), be)
 	if activate:
 		act = tf.nn.relu6(conv)
@@ -51,8 +54,8 @@ def build_conv(source, filter_shape, strides, padding='SAME', activate=True):
 	return act, we, be
 
 def build_deconv(source, output_shape, filter_shape, strides, padding='SAME', activate=True):
-	wd = tf.Variable(tf.random_normal(filter_shape))
-	bd = tf.Variable(tf.random_normal(output_shape[1:]))
+	wd = tf.Variable(xavier_init(filter_shape))
+	bd = tf.Variable(tf.zeros(output_shape[1:]))
 	deconv = tf.nn.conv2d_transpose(source, filter=wd, strides=strides, padding=padding, output_shape=output_shape)
 	if activate:
 		act = tf.nn.relu6(deconv)
@@ -68,30 +71,30 @@ def build_unpool(source, kernel_shape):
 	return tf.image.resize_images(source, input_shape[1]*kernel_shape[1], input_shape[2]*kernel_shape[2])
 
 # Create model
-def build_model(image_input_source, encoder_input_source, input_encoder_interpolation, dropout_toggle):
+def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	"""Image and Encoded are input placeholders.  input_encoded_interp is the toggle between input (when 0) and encoded (when 1).
 	Returns a decoder and the encoder output."""
 	# We have to match this output size.
 	batch, input_height, input_width, input_depth = image_input_source.get_shape().as_list()
 
 	# Convolutional ops will go here.
-	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
-	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
-	c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 2, 2, 1])
-	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
-	conv_output = c3
+	#c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, 256], [1, 1, 1, 1], activate=False)
+	#c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
+	#c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 1, 1, 1])
+	#c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
+	conv_output = image_input_source #c3
 
 	# Transition to FC layers.
 	pre_flat_shape = conv_output.get_shape().as_list()
 	flatten = tf.reshape(conv_output, [-1, pre_flat_shape[1]*pre_flat_shape[2]*pre_flat_shape[3]])
 
 	# Dense connections
-	fc0, wf0, bf0 = build_fc(flatten, 128)
+	fc0, wf0, bf0 = build_fc(flatten, 128, activate=False)
 	fc1, wf1, bf1 = build_fc(fc0, REPRESENTATION_SIZE)
 
 	# Output point and our encoder mix-in.
 	encoded_output = tf.nn.softmax(fc1)
-	encoded_input = encoder_input_source*input_encoder_interpolation + (1-input_encoder_interpolation)*encoded_output
+	encoded_input = encoder_input_source + encoded_output # Mix input and enc.
 	encoded_input.set_shape(encoded_output.get_shape()) # Otherwise we can't ascertain the size.
 
 	# More dense connections on the offset.
@@ -102,11 +105,11 @@ def build_model(image_input_source, encoder_input_source, input_encoder_interpol
 	unflatten = tf.reshape(fc3, [-1, pre_flat_shape[1], pre_flat_shape[2], pre_flat_shape[3]]) #pre_flat_shape)
 
 	# More convolutions here.
-	dc0 = build_unpool(unflatten, [1, 2, 2, 1])
-	dc1, wdc1, bdc1 = build_deconv(dc0, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 2, 2, 1])
-	dc2 = build_unpool(dc1, [1, 2, 2, 1])
-	dc3, wdc3, bdc3 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
-	deconv_output = dc3
+	#dc0 = build_unpool(unflatten, [1, 2, 2, 1])
+	#dc1, wdc1, bdc1 = build_deconv(dc0, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
+	#dc2 = build_unpool(dc1, [1, 2, 2, 1])
+	#dc3, wdc3, bdc3 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 1, 1, 1], activate=False)
+	deconv_output = unflatten #dc3
 
 	# Return result + encoder output
 	return deconv_output, encoded_output
@@ -165,7 +168,7 @@ def _add_dropout_encoder(self, to_encode, dropout_toggle):
 
 
 # Define data-source iterator
-def example_generator(file_glob, noise=0, cache=True):
+def example_generator(file_glob, noise=0.1, cache=True):
 	filenames = glob(file_glob)
 	file_cache = dict()
 	#for filename in cycle(filenames):
@@ -210,7 +213,6 @@ def example_generator(file_glob, noise=0, cache=True):
 # Define objects
 input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="image_input")
 encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
-input_encoder_interpolation = tf.placeholder(tf.float32, name="input_encoder_interpolation")
 keep_prob = tf.placeholder(tf.float32, name="keep_probability")
 output_objective = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="output_objective")
 
@@ -219,42 +221,48 @@ gen = example_generator(sys.argv[1], noise=0.1)
 def get_batch(batch_size):
 	batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
 	labels = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
-	for index, data in enumerate(gen):
-		if index >= batch_size:
-			break
+	index = 0
+	while index < batch_size:
+		#for index, data in enumerate(gen):
+		data = next(gen)
 		x, y = data
 		batch[index,:,:,:] = x[:,:,:]
 		labels[index,:,:,:] = y[:,:,:]
+		#if index >= batch_size:
+		#	break
+		index += 1
 	return batch, labels
 
 
 # Convenience method for writing an output image from an encoded array
+def save_image(struct, filename):
+	#img_tensor = tf.image.encode_jpeg(decoded[0])
+	decoded_min = struct[0].min()
+	decoded_max = struct[0].max()
+	decoded_norm = (struct[0]-decoded_min)/(decoded_max-decoded_min)
+	img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
+	img = Image.fromarray(img_arr)
+	img.save(filename)
+
 def save_reconstruction(session, decoder, array, filename):
 	decoded = session.run(decoder, feed_dict={
 		input_batch:np.zeros(shape=[BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH]), 
 		encoded_batch:array, 
 		keep_prob:1.0,
-		input_encoder_interpolation:1.0, # 100% encoder.
 	})
-	#img_tensor = tf.image.encode_jpeg(decoded[0])
-	decoded_min = decoded[0].min()
-	decoded_max = decoded[0].max()
-	decoded_norm = (decoded[0]-decoded_min)/(decoded_max-decoded_min)
-	img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
-	img = Image.fromarray(img_arr)
-	img.save(filename)
+	save_image(decoded, filename)
 
 
 # Run!
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
-	decoder, encoder = build_model(input_batch, encoded_batch, input_encoder_interpolation, keep_prob)
+	decoder, encoder = build_model(input_batch, encoded_batch, keep_prob)
 	# Get final ops
-	global_reconstruction_loss = tf.reduce_sum((output_objective - decoder)**2, [1, 2, 3]) # Reduce X,Y,W error, but not across batches.
+	global_reconstruction_loss = tf.reduce_sum((output_objective - decoder)**2)
 	#global_reconstruction_loss = tf.nn.l2_loss(output_objective - decoder)
-	#global_representation_loss = tf.pow(tf.abs(1 - np.sum(tf.abs(encoder))), SPARSITY_PENALTY)
-	global_loss = global_reconstruction_loss# + global_representation_loss 
-	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
+	#global_representation_loss = tf.reduce_sum(tf.abs(encoder))
+	global_loss = global_reconstruction_loss# + global_representation_loss
+	global_optimizer = tf.train.GradientDescentOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
 	# Init variables.
 	saver = tf.train.Saver()
@@ -279,7 +287,6 @@ with tf.Session() as sess:
 				feed_dict={
 					input_batch:x_batch, 
 					encoded_batch:np.zeros((BATCH_SIZE, REPRESENTATION_SIZE)),
-					input_encoder_interpolation:0, # Purely input
 					output_objective:y_batch
 				}
 			) # y_batch is denoised.
@@ -291,8 +298,7 @@ with tf.Session() as sess:
 
 				# Render output sample
 				encoded = sess.run(encoder, feed_dict={
-					input_batch:x_batch, 
-					input_encoder_interpolation:0,
+					input_batch:y_batch, 
 				})
 
 				# Randomly generated sample
