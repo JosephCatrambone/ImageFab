@@ -11,15 +11,15 @@ import numpy as np
 import tensorflow as tf
 
 # Display for debugging
-np.set_printoptions(suppress=True, precision=15, linewidth=200)
+np.set_printoptions(suppress=True, precision=25, linewidth=200)
 
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 TRAINING_ITERATIONS = 500000
 TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 10
-BATCH_SIZE = 10
-IMAGE_WIDTH = 27
-IMAGE_HEIGHT = 27
+BATCH_SIZE = 1
+IMAGE_WIDTH = 64
+IMAGE_HEIGHT = 64
 IMAGE_DEPTH = 3
 
 def xavier_init(shape, constant=1):
@@ -48,7 +48,7 @@ def build_conv(source, filter_shape, strides, padding='SAME', activate=True):
 	be = tf.Variable(tf.zeros([filter_shape[-1],]))
 	conv = tf.nn.bias_add(tf.nn.conv2d(source, filter=we, strides=strides, padding=padding), be)
 	if activate:
-		act = tf.nn.relu6(conv)
+		act = tf.nn.tanh(conv) # Not relu6
 	else:
 		act = conv
 	return act, we, be
@@ -58,7 +58,7 @@ def build_deconv(source, output_shape, filter_shape, strides, padding='SAME', ac
 	bd = tf.Variable(tf.zeros(output_shape[1:]))
 	deconv = tf.nn.conv2d_transpose(source, filter=wd, strides=strides, padding=padding, output_shape=output_shape)
 	if activate:
-		act = tf.nn.relu6(deconv)
+		act = tf.nn.tanh(deconv)
 	else:
 		act = deconv
 	return act, wd, bd
@@ -78,18 +78,18 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	batch, input_height, input_width, input_depth = image_input_source.get_shape().as_list()
 
 	# Convolutional ops will go here.
-	#c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, 256], [1, 1, 1, 1], activate=False)
-	#c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
-	#c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 1, 1, 1])
-	#c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
-	conv_output = image_input_source #c3
+	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
+	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
+	c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 1, 1, 1])
+	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
+	conv_output = c3
 
 	# Transition to FC layers.
 	pre_flat_shape = conv_output.get_shape().as_list()
 	flatten = tf.reshape(conv_output, [-1, pre_flat_shape[1]*pre_flat_shape[2]*pre_flat_shape[3]])
 
 	# Dense connections
-	fc0, wf0, bf0 = build_fc(flatten, 128, activate=False)
+	fc0, wf0, bf0 = build_fc(flatten, 128)
 	fc1, wf1, bf1 = build_fc(fc0, REPRESENTATION_SIZE)
 
 	# Output point and our encoder mix-in.
@@ -99,17 +99,17 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 
 	# More dense connections on the offset.
 	fc2, wf2, bf2 = build_fc(encoded_input, 128)
-	fc3, wf3, bf3 = build_fc(fc2, flatten.get_shape().as_list()[-1], activate=False)
+	fc3, wf3, bf3 = build_fc(fc2, flatten.get_shape().as_list()[-1])
 
 	# Expand for more convolutional operations.
 	unflatten = tf.reshape(fc3, [-1, pre_flat_shape[1], pre_flat_shape[2], pre_flat_shape[3]]) #pre_flat_shape)
 
 	# More convolutions here.
-	#dc0 = build_unpool(unflatten, [1, 2, 2, 1])
-	#dc1, wdc1, bdc1 = build_deconv(dc0, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
-	#dc2 = build_unpool(dc1, [1, 2, 2, 1])
-	#dc3, wdc3, bdc3 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 1, 1, 1], activate=False)
-	deconv_output = unflatten #dc3
+	dc0 = build_unpool(unflatten, [1, 2, 2, 1])
+	dc1, wdc1, bdc1 = build_deconv(dc0, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
+	dc2 = build_unpool(dc1, [1, 2, 2, 1])
+	dc3, wdc3, bdc3 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
+	deconv_output = dc3
 
 	# Return result + encoder output
 	return deconv_output, encoded_output
@@ -121,41 +121,6 @@ def _add_lrn_encoder(self, input_to_encode):
 	self.encoder_operations.append(enc_op)
 	self.encoder_weights.append(None)
 	self.encoder_biases.append(None)
-
-def add_pool(self, batch_size, kernel_height, kernel_width, kernel_depth, strides=None):
-	input_shape = self._last_encoder.get_shape().as_list()
-
-	if strides is None:
-		strides = [1, kernel_height, kernel_width, 1]
-
-	self._add_pool_encoder(self._last_encoder, [batch_size, kernel_height, kernel_width, kernel_depth], strides)
-	encoder_reference = self.encoder_operations[-1]
-	self._last_encoder = encoder_reference
-
-	def decoder_builder(signal_to_decode):
-		self._add_pool_decoder(encoder_reference, signal_to_decode, input_shape, [batch_size, kernel_height, kernel_width, kernel_depth], [1, 1])
-	self.build_queue.append(decoder_builder)
-
-def _add_pool_encoder(self, input_to_encode, kernel_shape, strides):
-	print("POOL ENC {} (x) {}".format(input_to_encode.get_shape(), kernel_shape))
-	pool = tf.nn.max_pool(input_to_encode, ksize=kernel_shape, strides=strides, padding='SAME')
-
-	self.encoder_operations.append(pool)
-	self.encoder_weights.append(None)
-	self.encoder_biases.append(None)
-
-def _add_pool_decoder(self, signal_from_encoder, input_to_decode, input_shape, kernel_shape, strides):
-	print("POOL DEC {} (x) {}".format(input_shape, kernel_shape))
-	# Deconv2D args:
-	deconv = tf.image.resize_images(input_to_decode, input_shape[1], input_shape[2])
-
-	self.decoder_operations.append(deconv)
-	self.decoder_weights.append(None)
-	self.decoder_biases.append(None)
-
-	# Autoencode phase
-	autoenc = tf.image.resize_images(signal_from_encoder, input_shape[1], input_shape[2])
-	self.pretrainer_operations.append(autoenc)
 
 def _add_dropout_encoder(self, to_encode, dropout_toggle):
 	print("DROPOUT ENC")
