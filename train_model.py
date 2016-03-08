@@ -13,13 +13,13 @@ import tensorflow as tf
 # Display for debugging
 np.set_printoptions(suppress=True, precision=25, linewidth=200)
 
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.00001
 TRAINING_ITERATIONS = 500000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 10
+REPRESENTATION_SIZE = 100
 BATCH_SIZE = 1
-IMAGE_WIDTH = 64
-IMAGE_HEIGHT = 64
+IMAGE_WIDTH = 128
+IMAGE_HEIGHT = 128
 IMAGE_DEPTH = 3
 
 def xavier_init(shape, constant=1):
@@ -82,14 +82,16 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
 	c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 1, 1, 1])
 	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
-	conv_output = c3
+	c4, wc4, bc4 = build_conv(c3, [3, 3, 128, 64], [1, 1, 1, 1])
+	c5 = build_max_pool(c4, [1, 2, 2, 1], [1, 2, 2, 1])
+	conv_output = c5
 
 	# Transition to FC layers.
 	pre_flat_shape = conv_output.get_shape().as_list()
 	flatten = tf.reshape(conv_output, [-1, pre_flat_shape[1]*pre_flat_shape[2]*pre_flat_shape[3]])
 
 	# Dense connections
-	fc0, wf0, bf0 = build_fc(flatten, 128)
+	fc0, wf0, bf0 = build_fc(flatten, 512)
 	fc1, wf1, bf1 = build_fc(fc0, REPRESENTATION_SIZE)
 
 	# Output point and our encoder mix-in.
@@ -98,7 +100,7 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	encoded_input.set_shape(encoded_output.get_shape()) # Otherwise we can't ascertain the size.
 
 	# More dense connections on the offset.
-	fc2, wf2, bf2 = build_fc(encoded_input, 128)
+	fc2, wf2, bf2 = build_fc(encoded_input, 512)
 	fc3, wf3, bf3 = build_fc(fc2, flatten.get_shape().as_list()[-1])
 
 	# Expand for more convolutional operations.
@@ -106,10 +108,12 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 
 	# More convolutions here.
 	dc0 = build_unpool(unflatten, [1, 2, 2, 1])
-	dc1, wdc1, bdc1 = build_deconv(dc0, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
+	dc1, wdc1, bdc1 = build_deconv(dc0, c3.get_shape().as_list(), [3, 3, 128, 64], [1, 1, 1, 1])
 	dc2 = build_unpool(dc1, [1, 2, 2, 1])
-	dc3, wdc3, bdc3 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
-	deconv_output = dc3
+	dc3, wdc3, bdc3 = build_deconv(dc2, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
+	dc4 = build_unpool(dc3, [1, 2, 2, 1])
+	dc5, wdc5, bdc5 = build_deconv(dc4, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
+	deconv_output = dc5
 
 	# Return result + encoder output
 	return deconv_output, encoded_output
@@ -269,7 +273,7 @@ with tf.Session() as sess:
 				# Randomly generated sample
 				#decoded = sess.run(decoder, feed_dict={encoded_batch:np.random.normal(loc=encoded.mean(), scale=encoded.std(), size=[BATCH_SIZE, REPRESENTATION_SIZE])})
 				print("Encoded: {}".format(encoded))
-				save_reconstruction(sess, decoder, encoded, "test_{}.jpg".format(iteration))
+				save_reconstruction(sess, decoder, encoded, "test_{:08d}.jpg".format(iteration))
 				time.sleep(1.0) # Sleep to avoid shared process killing us for resources.
 		except KeyboardInterrupt:
 			from IPython.core.debugger import Tracer
