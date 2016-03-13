@@ -13,13 +13,13 @@ import tensorflow as tf
 # Display for debugging
 np.set_printoptions(suppress=True, precision=25, linewidth=200)
 
-LEARNING_RATE = 0.00001
+LEARNING_RATE = 0.0001
 TRAINING_ITERATIONS = 500000
 TRAINING_REPORT_INTERVAL = 100
-REPRESENTATION_SIZE = 100
+REPRESENTATION_SIZE = 1000
 BATCH_SIZE = 1
-IMAGE_WIDTH = 128
-IMAGE_HEIGHT = 128
+IMAGE_WIDTH = 512
+IMAGE_HEIGHT = 512
 IMAGE_DEPTH = 3
 
 def xavier_init(shape, constant=1):
@@ -70,6 +70,12 @@ def build_unpool(source, kernel_shape):
 	input_shape = source.get_shape().as_list()
 	return tf.image.resize_images(source, input_shape[1]*kernel_shape[1], input_shape[2]*kernel_shape[2])
 
+def build_dropout(source, toggle):
+	return tf.nn.dropout(source, toggle)
+
+def build_lrn(source):
+	return tf.nn.local_response_normalization(source)
+
 # Create model
 def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	"""Image and Encoded are input placeholders.  input_encoded_interp is the toggle between input (when 0) and encoded (when 1).
@@ -82,9 +88,15 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
 	c2, wc2, bc2 = build_conv(c1, [3, 3, 256, 128], [1, 1, 1, 1])
 	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
-	c4, wc4, bc4 = build_conv(c3, [3, 3, 128, 64], [1, 1, 1, 1])
+	d0 = build_dropout(c3, dropout_toggle)
+	c4, wc4, bc4 = build_conv(d0, [3, 3, 128, 64], [1, 1, 1, 1])
 	c5 = build_max_pool(c4, [1, 2, 2, 1], [1, 2, 2, 1])
-	conv_output = c5
+	d1 = build_dropout(c5, dropout_toggle)
+	c6, wc6, bc6 = build_conv(d1, [3, 3, 64, 64], [1, 1, 1, 1])
+	c7 = build_max_pool(c6, [1, 2, 2, 1], [1, 2, 2, 1])
+	c8, wc8, bc8 = build_conv(c7, [3, 3, 64, 64], [1, 1, 1, 1])
+	c9 = build_max_pool(c8, [1, 2, 2, 1], [1, 2, 2, 1])
+	conv_output = c9
 
 	# Transition to FC layers.
 	pre_flat_shape = conv_output.get_shape().as_list()
@@ -107,33 +119,20 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	unflatten = tf.reshape(fc3, [-1, pre_flat_shape[1], pre_flat_shape[2], pre_flat_shape[3]]) #pre_flat_shape)
 
 	# More convolutions here.
-	dc0 = build_unpool(unflatten, [1, 2, 2, 1])
-	dc1, wdc1, bdc1 = build_deconv(dc0, c3.get_shape().as_list(), [3, 3, 128, 64], [1, 1, 1, 1])
-	dc2 = build_unpool(dc1, [1, 2, 2, 1])
-	dc3, wdc3, bdc3 = build_deconv(dc2, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
-	dc4 = build_unpool(dc3, [1, 2, 2, 1])
-	dc5, wdc5, bdc5 = build_deconv(dc4, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
-	deconv_output = dc5
+	dc9 = build_unpool(unflatten, [1, 2, 2, 1])
+	dc8, wdc8, bdc8 = build_deconv(dc9, c7.get_shape().as_list(), [3, 3, 64, 64], [1, 1, 1, 1])
+	dc7 = build_unpool(dc8, [1, 2, 2, 1])
+	dc6, wdc6, bdc6 = build_deconv(dc7, c5.get_shape().as_list(), [3, 3, 64, 64], [1, 1, 1, 1])
+	dc5 = build_unpool(dc6, [1, 2, 2, 1])
+	dc4, wdc4, bdc4 = build_deconv(dc5, c3.get_shape().as_list(), [3, 3, 128, 64], [1, 1, 1, 1])
+	dc3 = build_unpool(dc4, [1, 2, 2, 1])
+	dc2, wdc2, bdc2 = build_deconv(dc3, c1.get_shape().as_list(), [3, 3, 256, 128], [1, 1, 1, 1])
+	dc1 = build_unpool(dc2, [1, 2, 2, 1])
+	dc0, wdc7, bdc7 = build_deconv(dc1, [batch, input_height, input_width, input_depth], [3, 3, 3, 256], [1, 2, 2, 1], activate=False)
+	deconv_output = dc0
 
 	# Return result + encoder output
 	return deconv_output, encoded_output
-
-# Other methods we need to finish migrating.
-# AGAIN THESE ARE PENDING MIGRATION!  THEY DON'T DO ANYTHING YET!
-def _add_lrn_encoder(self, input_to_encode):
-	enc_op = tf.nn.local_response_normalization(input_to_encode)
-	self.encoder_operations.append(enc_op)
-	self.encoder_weights.append(None)
-	self.encoder_biases.append(None)
-
-def _add_dropout_encoder(self, to_encode, dropout_toggle):
-	print("DROPOUT ENC")
-	# Encode
-	drop = tf.nn.dropout(to_encode, dropout_toggle)
-
-	self.encoder_operations.append(drop)
-	self.encoder_weights.append(None)
-	self.encoder_biases.append(None)
 
 
 # Define data-source iterator
@@ -227,11 +226,13 @@ with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
 	decoder, encoder = build_model(input_batch, encoded_batch, keep_prob)
 	# Get final ops
-	global_reconstruction_loss = tf.reduce_sum((output_objective - decoder)**2)
+	global_reconstruction_loss = tf.reduce_sum(np.abs(output_objective - decoder))
+	#global_reconstruction_loss = tf.reduce_sum((output_objective - decoder)**2)
 	#global_reconstruction_loss = tf.nn.l2_loss(output_objective - decoder)
 	#global_representation_loss = tf.reduce_sum(tf.abs(encoder))
 	global_loss = global_reconstruction_loss# + global_representation_loss
-	global_optimizer = tf.train.GradientDescentOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
+	global_optimizer = tf.train.GradientDescentOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss) #tf.clip_by_value(global_loss, -1e6, 1e6))
+	#global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
 	# Init variables.
 	saver = tf.train.Saver()
@@ -256,7 +257,8 @@ with tf.Session() as sess:
 				feed_dict={
 					input_batch:x_batch, 
 					encoded_batch:np.zeros((BATCH_SIZE, REPRESENTATION_SIZE)),
-					output_objective:y_batch
+					output_objective:y_batch,
+					keep_prob:0.5,
 				}
 			) # y_batch is denoised.
 			print("Iter {}: {} \n {} \n {}".format(iteration, loss1, encoder_output.sum(), encoder_output[0,:]))
@@ -268,6 +270,7 @@ with tf.Session() as sess:
 				# Render output sample
 				encoded = sess.run(encoder, feed_dict={
 					input_batch:y_batch, 
+					keep_prob:1.0,
 				})
 
 				# Randomly generated sample
