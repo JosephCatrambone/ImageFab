@@ -15,7 +15,7 @@ import hashlib
 # Display for debugging
 np.set_printoptions(suppress=True, precision=25, linewidth=200)
 
-LEARNING_RATE = 0.1
+LEARNING_RATE = 0.0001
 TRAINING_ITERATIONS = 500000
 TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 100
@@ -41,14 +41,16 @@ class MeanFilter(object):
 		return example + self.cached_average
 
 def activation(source):
+	# Tanh
 	#return tf.nn.tanh(source)
-	alpha = 0.001
-	x = tf.nn.relu(source)
-	return tf.maximum(alpha*x, x)
-	#alpha = 0.2
-	#f1 = 0.5 * (1 + source)
-	#f2 = 0.5 * (1 - source)
-	#return (f1 * source) + (f2 * tf.abs(source))
+	# Relu
+	#x = tf.nn.relu(source)
+	# Leaky ReLU
+	#alpha = 0.001
+	#return tf.maximum(alpha*source, source)
+	# My evil slide of doom activation:
+	alpha = 0.02
+	return tf.maximum(alpha*source, tf.sin(source)+source) 
 
 def xavier_init(shape, constant=1):
 	val = 0.1 #constant * np.sqrt(2.0/float(np.sum(np.abs(shape[1:]))))
@@ -141,7 +143,7 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	fc_out = fc2
 
 	# Output point and our encoder mix-in.
-	encoded_output = tf.nn.softmax(fc_out)
+	encoded_output = fc_out #tf.nn.softmax(fc_out)
 	encoded_input = build_dropout(encoder_input_source + encoded_output, dropout_toggle) # Mix input and enc.
 	encoded_input.set_shape(encoded_output.get_shape()) # Otherwise we can't ascertain the size.
 
@@ -167,7 +169,7 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 
 
 # Define data-source iterator
-def example_generator(file_glob, noise=0.01, cache=True):
+def example_generator(file_glob, noise=0.0, cache=True):
 	filenames = glob(file_glob)
 	file_cache = dict()
 	#for filename in cycle(filenames):
@@ -221,7 +223,7 @@ output_objective = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_W
 mean_filter = MeanFilter(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH)
 
 # Define the batch iterator
-gen = example_generator(sys.argv[1], noise=0.1)
+gen = example_generator(sys.argv[1])
 def get_batch(batch_size):
 	batch = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
 	labels = np.zeros([batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], dtype=np.float)
@@ -237,17 +239,19 @@ def get_batch(batch_size):
 		index += 1
 	return batch, labels
 
-# TODO: Fix this gross hack.  Pre-baking by generating a bunch of batches to get the mean filter warmed up.
-for _ in range(100):
-	get_batch(10)
-
 # Convenience method for writing an output image from an encoded array
 def save_image(struct, filename):
 	#img_tensor = tf.image.encode_jpeg(decoded[0])
-	struct = mean_filter.unfilter(struct)
-	decoded_min = struct[0].min()
-	decoded_max = struct[0].max()
-	decoded_norm = (struct[0]-decoded_min)/(1.0e-6+decoded_max-decoded_min)
+	print("Output mean: {}.  Low: {}  High: {}".format(struct[0].mean(), struct[0].min(), struct[0].max()))
+	# Normalize to -1 - 1 and unfilter, then re-normalize for output.
+	struct = mean_filter.unfilter(struct[0])
+	decoded_min = struct.min()
+	decoded_max = struct.max()
+	if decoded_min == decoded_max:
+		decoded_max = 1.0
+		decoded_min = 0
+	decoded_norm = (struct-decoded_min)/(decoded_max-decoded_min)
+
 	img_arr = np.asarray(decoded_norm*255, dtype=np.uint8)
 	img = Image.fromarray(img_arr)
 	img.save(filename)
@@ -260,7 +264,6 @@ def save_reconstruction(session, decoder, array, filename):
 	})
 	save_image(decoded, filename)
 
-
 # Run!
 with tf.Session() as sess:
 	# Populate autoencoder in session and gather pretrainers.
@@ -271,7 +274,7 @@ with tf.Session() as sess:
 	global_reconstruction_loss = tf.reduce_sum(tf.square(output_objective - decoder))
 	#global_reconstruction_loss = tf.nn.l2_loss(output_objective - decoder)
 	global_representation_loss = tf.abs(1-tf.reduce_sum(encoder)) + tf.reduce_sum(tf.abs(encoder))
-	global_loss = global_reconstruction_loss#+ global_representation_loss
+	global_loss = global_reconstruction_loss + global_representation_loss
 	#global_optimizer = tf.train.GradientDescentOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss) #tf.clip_by_value(global_loss, -1e6, 1e6))
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
