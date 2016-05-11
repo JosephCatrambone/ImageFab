@@ -50,7 +50,8 @@ def activation(source):
 	#return tf.maximum(alpha*source, source)
 	# My evil slide of doom activation:
 	alpha = 0.02
-	return tf.maximum(alpha*source, tf.sin(source)+source) 
+	beta = 1.1
+	return tf.maximum(alpha*source, tf.sin(source)+(beta*source)) 
 
 def xavier_init(shape, constant=1):
 	val = 0.1 #constant * np.sqrt(2.0/float(np.sum(np.abs(shape[1:]))))
@@ -91,10 +92,12 @@ def build_conv(source, filter_shape, strides, padding='SAME', activate=True, wei
 def build_deconv(source, output_shape, filter_shape, strides, padding='SAME', activate=True, weight=None, bias=None):
 	if not weight:
 		weight = tf.Variable(xavier_init(filter_shape))
-	if not bias:
-		bias = tf.Variable(tf.zeros(output_shape[1:]))
-	#deconv = tf.nn.bias_add(tf.nn.conv2d_transpose(source, filter=weight, strides=strides, padding=padding, output_shape=output_shape), bias)
 	deconv = tf.nn.conv2d_transpose(source, filter=weight, strides=strides, padding=padding, output_shape=output_shape)
+	if not bias:
+		#bias = tf.Variable(tf.zeros(output_shape[1:]))
+		bias = tf.Variable(tf.zeros([deconv.get_shape()[-1],]))
+	deconv = tf.nn.bias_add(deconv, -bias)
+	#deconv = tf.nn.conv2d_transpose(source, filter=weight, strides=strides, padding=padding, output_shape=output_shape)
 	if activate:
 		act = activation(deconv)
 	else:
@@ -125,12 +128,12 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 
 	# Convolutional ops will go here.
 	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False)
-	#c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
-	c2, wc2, bc2 = build_conv(c0, [3, 3, filter_sizes[0], filter_sizes[1]], [1, 2, 2, 1])
-	#c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
-	c4, wc4, bc4 = build_conv(build_dropout(c2, dropout_toggle), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 2, 2, 1])
-	#c5 = build_max_pool(c4, [1, 2, 2, 1], [1, 2, 2, 1])
-	conv_output = c4
+	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
+	c2, wc2, bc2 = build_conv(c1, [3, 3, filter_sizes[0], filter_sizes[1]], [1, 2, 2, 1])
+	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
+	c4, wc4, bc4 = build_conv(build_dropout(c3, dropout_toggle), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 2, 2, 1])
+	c5 = build_max_pool(c4, [1, 2, 2, 1], [1, 2, 2, 1])
+	conv_output = c5
 
 	# Transition to FC layers.
 	pre_flat_shape = conv_output.get_shape().as_list()
@@ -156,12 +159,12 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	unflatten = tf.reshape(dfc0, [-1, pre_flat_shape[1], pre_flat_shape[2], pre_flat_shape[3]]) #pre_flat_shape)
 
 	# More convolutions here.
-	#dc5 = build_unpool(unflatten, [1, 2, 2, 1])
-	dc4, wdc4, bdc4 = build_deconv(build_dropout(unflatten, dropout_toggle), c2.get_shape().as_list(), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 2, 2, 1], weight=wc4, bias=bc2)
-	#dc3 = build_unpool(dc4, [1, 2, 2, 1])
-	dc2, wdc2, bdc2 = build_deconv(build_dropout(dc4, dropout_toggle), c0.get_shape().as_list(), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 2, 2, 1], weight=wc2, bias=bc0)
-	#dc1 = build_unpool(dc2, [1, 2, 2, 1])
-	dc0, wdc0, bdc0 = build_deconv(dc2, [batch, input_height, input_width, input_depth], [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False, weight=wc0)
+	dc5 = build_unpool(unflatten, [1, 2, 2, 1])
+	dc4, wdc4, bdc4 = build_deconv(build_dropout(dc5, dropout_toggle), c3.get_shape().as_list(), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 2, 2, 1], weight=wc4, bias=bc2)
+	dc3 = build_unpool(dc4, [1, 2, 2, 1])
+	dc2, wdc2, bdc2 = build_deconv(build_dropout(dc3, dropout_toggle), c1.get_shape().as_list(), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 2, 2, 1], weight=wc2, bias=bc0)
+	dc1 = build_unpool(dc2, [1, 2, 2, 1])
+	dc0, wdc0, bdc0 = build_deconv(dc1, [batch, input_height, input_width, input_depth], [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False, weight=wc0)
 	deconv_output = dc0
 
 	# Return result + encoder output
@@ -220,7 +223,6 @@ input_batch = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH,
 encoded_batch = tf.placeholder(tf.float32, [BATCH_SIZE, REPRESENTATION_SIZE], name="encoder_input") # Replace BATCH_SIZE with None
 keep_prob = tf.placeholder(tf.float32, name="keep_probability")
 output_objective = tf.placeholder(tf.float32, [BATCH_SIZE, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH], name="output_objective")
-mean_filter = MeanFilter(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_DEPTH)
 
 # Define the batch iterator
 gen = example_generator(sys.argv[1])
@@ -232,8 +234,8 @@ def get_batch(batch_size):
 		#for index, data in enumerate(gen):
 		data = next(gen)
 		x, y = data
-		labels[index,:,:,:] = mean_filter.filter(y[:,:,:])
-		batch[index,:,:,:] = mean_filter.filter(x[:,:,:], update=False)
+		labels[index,:,:,:] = y[:,:,:]
+		batch[index,:,:,:] = x[:,:,:]
 		#if index >= batch_size:
 		#	break
 		index += 1
@@ -244,7 +246,7 @@ def save_image(struct, filename):
 	#img_tensor = tf.image.encode_jpeg(decoded[0])
 	print("Output mean: {}.  Low: {}  High: {}".format(struct[0].mean(), struct[0].min(), struct[0].max()))
 	# Normalize to -1 - 1 and unfilter, then re-normalize for output.
-	struct = mean_filter.unfilter(struct[0])
+	struct = struct[0]
 	decoded_min = struct.min()
 	decoded_max = struct.max()
 	if decoded_min == decoded_max:
