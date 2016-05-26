@@ -124,14 +124,14 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	# We have to match this output size.
 	batch, input_height, input_width, input_depth = image_input_source.get_shape().as_list()
 
-	filter_sizes = [8, 16, 32] # Like VGG net, except made by a stupid person.
+	filter_sizes = [64, 64, 64] # Like VGG net, except made by a stupid person.
 
 	# Convolutional ops will go here.
 	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False)
 	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
-	c2, wc2, bc2 = build_conv(c1, [3, 3, filter_sizes[0], filter_sizes[1]], [1, 2, 2, 1])
+	c2, wc2, bc2 = build_conv(build_dropout(c1, dropout_toggle), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 1, 1, 1])
 	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
-	c4, wc4, bc4 = build_conv(build_dropout(c3, dropout_toggle), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 2, 2, 1])
+	c4, wc4, bc4 = build_conv(build_dropout(c3, dropout_toggle), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 1, 1, 1])
 	c5 = build_max_pool(c4, [1, 2, 2, 1], [1, 2, 2, 1])
 	conv_output = c5
 
@@ -146,7 +146,9 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	fc_out = fc2
 
 	# Output point and our encoder mix-in.
-	encoded_output = fc_out #tf.nn.softmax(fc_out)
+	mu_output, wmu, bmu = build_fc(fc_out, REPRESENTATION_SIZE)
+	z_output, wz, bz = build_fc(fc_out, REPRESENTATION_SIZE)
+	encoded_output = tf.random_normal(mean=mu_output, stddev=z_output, shape=z_output.get_shape()) #tf.nn.softmax(fc_out)
 	encoded_input = build_dropout(encoder_input_source + encoded_output, dropout_toggle) # Mix input and enc.
 	encoded_input.set_shape(encoded_output.get_shape()) # Otherwise we can't ascertain the size.
 
@@ -160,11 +162,11 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 
 	# More convolutions here.
 	dc5 = build_unpool(unflatten, [1, 2, 2, 1])
-	dc4, wdc4, bdc4 = build_deconv(build_dropout(dc5, dropout_toggle), c3.get_shape().as_list(), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 2, 2, 1], weight=wc4, bias=bc2)
+	dc4, wdc4, bdc4 = build_deconv(build_dropout(dc5, dropout_toggle), c3.get_shape().as_list(), [3, 3, filter_sizes[1], filter_sizes[2]], [1, 1, 1, 1])
 	dc3 = build_unpool(dc4, [1, 2, 2, 1])
-	dc2, wdc2, bdc2 = build_deconv(build_dropout(dc3, dropout_toggle), c1.get_shape().as_list(), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 2, 2, 1], weight=wc2, bias=bc0)
+	dc2, wdc2, bdc2 = build_deconv(build_dropout(dc3, dropout_toggle), c1.get_shape().as_list(), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 1, 1, 1])
 	dc1 = build_unpool(dc2, [1, 2, 2, 1])
-	dc0, wdc0, bdc0 = build_deconv(dc1, [batch, input_height, input_width, input_depth], [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False, weight=wc0)
+	dc0, wdc0, bdc0 = build_deconv(dc1, [batch, input_height, input_width, input_depth], [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False)
 	deconv_output = dc0
 
 	# Return result + encoder output
@@ -276,7 +278,7 @@ with tf.Session() as sess:
 	global_reconstruction_loss = tf.reduce_sum(tf.square(output_objective - decoder))
 	#global_reconstruction_loss = tf.nn.l2_loss(output_objective - decoder)
 	global_representation_loss = tf.abs(1-tf.reduce_sum(encoder)) + tf.reduce_sum(tf.abs(encoder))
-	global_loss = global_reconstruction_loss + global_representation_loss
+	global_loss = global_reconstruction_loss#+ global_representation_loss
 	#global_optimizer = tf.train.GradientDescentOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss) #tf.clip_by_value(global_loss, -1e6, 1e6))
 	global_optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(global_loss)
 
