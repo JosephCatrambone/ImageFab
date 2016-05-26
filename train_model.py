@@ -24,22 +24,6 @@ IMAGE_WIDTH = 128
 IMAGE_HEIGHT = 128
 IMAGE_DEPTH = 3
 
-class MeanFilter(object):
-	def __init__(self, h, w, d):
-		self.accumulator = np.zeros((h, w, d), dtype=np.float)
-		self.seen_examples = set()
-		self.cached_average = np.zeros((h, w, d), dtype=np.float) # Recalculated rarely.
-	
-	def filter(self, example, update=True):
-		if update and example.tostring() not in self.seen_examples:
-			self.seen_examples.add(example.tostring())
-			self.accumulator += example
-			self.cached_average = self.accumulator / float(len(self.seen_examples))
-		return example - self.cached_average
-
-	def unfilter(self, example):
-		return example + self.cached_average
-
 def activation(source):
 	# Tanh
 	#return tf.nn.tanh(source)
