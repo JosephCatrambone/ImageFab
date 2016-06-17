@@ -20,8 +20,8 @@ TRAINING_ITERATIONS = 500000
 TRAINING_REPORT_INTERVAL = 100
 REPRESENTATION_SIZE = 100
 BATCH_SIZE = 1
-IMAGE_WIDTH = 128
-IMAGE_HEIGHT = 128
+IMAGE_WIDTH = 32
+IMAGE_HEIGHT = 32
 IMAGE_DEPTH = 3
 
 def activation(source):
@@ -111,7 +111,7 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	filter_sizes = [64, 64, 64] # Like VGG net, except made by a stupid person.
 
 	# Convolutional ops will go here.
-	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False)
+	c0, wc0, bc0 = build_conv(image_input_source, [3, 3, input_depth, filter_sizes[0]], [1, 1, 1, 1], activate=False)
 	c1 = build_max_pool(c0, [1, 2, 2, 1], [1, 2, 2, 1])
 	c2, wc2, bc2 = build_conv(build_dropout(c1, dropout_toggle), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 1, 1, 1])
 	c3 = build_max_pool(c2, [1, 2, 2, 1], [1, 2, 2, 1])
@@ -150,7 +150,7 @@ def build_model(image_input_source, encoder_input_source, dropout_toggle):
 	dc3 = build_unpool(dc4, [1, 2, 2, 1])
 	dc2, wdc2, bdc2 = build_deconv(build_dropout(dc3, dropout_toggle), c1.get_shape().as_list(), [3, 3, filter_sizes[0], filter_sizes[1]], [1, 1, 1, 1])
 	dc1 = build_unpool(dc2, [1, 2, 2, 1])
-	dc0, wdc0, bdc0 = build_deconv(dc1, [batch, input_height, input_width, input_depth], [3, 3, 3, filter_sizes[0]], [1, 1, 1, 1], activate=False)
+	dc0, wdc0, bdc0 = build_deconv(dc1, [batch, input_height, input_width, input_depth], [3, 3, input_depth, filter_sizes[0]], [1, 1, 1, 1], activate=False)
 	deconv_output = dc0
 
 	# Return result + encoder output
